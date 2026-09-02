@@ -1,0 +1,21 @@
+from app.services.reconciliation import reconcile_salary
+from fastapi import APIRouter, UploadFile
+import pandas as pd
+
+router = APIRouter(prefix="/audit", tags=["Audit"])
+
+
+@router.post("/reconcile")
+async def reconcile_files(accruals_file: UploadFile, payments_file: UploadFile):
+    # Считываем загруженные Excel-файлы
+    df_accruals = pd.read_excel(accruals_file.file)
+    df_payments = pd.read_excel(payments_file.file)
+
+    # Вызываем нашу функцию из app/services/reconciliation.py
+    df_result, risk_comments = reconcile_salary(df_accruals, df_payments)
+
+    # Возвращаем результат и список рисков под таблицей в формате JSON
+    return {
+        "table_data": df_result.to_dict(orient="records"),
+        "risk_comments": risk_comments,
+    }
