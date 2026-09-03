@@ -1,181 +1,127 @@
 import io
-import sys
-from pathlib import Path
-
-# Добавление путей для правильного импорта модулей
-ROOT_DIR = Path(__file__).resolve().parent
-sys.path.append(str(ROOT_DIR))
-sys.path.append(str(ROOT_DIR / "app"))
-
+import os
+import re
 import pandas as pd
 import streamlit as st
 
-# Безопасный импорт функций парсинга и сверки
+# Импорт функций из сервисного модуля сверки
 try:
     from app.services.reconciliation import (
         parse_excel_accruals,
-        parse_image_5_15a,
-        parse_pdf_5_15a,
-        reconcile_salary,
+        extract_text_from_pdf,
     )
 except ImportError:
+    # Запасной вариант импорта, если рабочая директория находится внутри папки app
     from services.reconciliation import (
         parse_excel_accruals,
-        parse_image_5_15a,
-        parse_pdf_5_15a,
-        reconcile_salary,
+        extract_text_from_pdf,
     )
 
+# -----------------------------------------------------------------------------
+# Конфигурация страницы Streamlit
+# -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Аудит заработной платы и Калькулятор ПП РК № 1193",
+    page_title="Калькулятор ЗП и Аудит формы 5-15А",
+    page_icon="🏛️",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
 st.title("🏛️ Калькулятор заработной платы и Аудит формы 5-15А")
 st.caption("Система расчета гражданских служащих (ПП РК № 1193) и финансовая сверка")
 
-tab1, tab2 = st.tabs(["📊 Калькулятор начислений (ПП РК № 1193)", "🔍 Сверка ведомостей и 5-15А"])
+# -----------------------------------------------------------------------------
+# Вкладки приложения
+# -----------------------------------------------------------------------------
+tab1, tab2 = st.tabs([
+    "📊 Калькулятор начислений (ПП РК № 1193)",
+    "🔍 Сверка ведомостей и 5-15А"
+])
 
-# ==========================================
-# ВКЛАДКА 1: КАЛЬКУЛЯТОР
-# ==========================================
+# =============================================================================
+# Вкладка 1: Калькулятор начислений
+# =============================================================================
 with tab1:
-    st.header("Расчет должностного оклада и начислений")
+    st.header("Расчет оклада и начислений работникам КГУ")
     
-    col_params, col_results = st.columns([1, 1])
-    
-    with col_params:
-        st.subheader("Параметры работника")
-        bdo = st.number_input("Базовый должностной оклад (БДО), ₸", value=17697, step=100, key="calc_bdo_input")
-        
-        cat_group = st.selectbox(
-            "Функциональная блок-группа",
-            ["A (Управленческий персонал)", "B (Основной персонал)", "C (Административный)", "D (Вспомогательный)"],
-            key="calc_cat_group"
-        )
-        
+    col1, col2 = st.columns(2)
+    with col1:
         category = st.selectbox(
             "Категория должности",
-            ["A1", "A2", "A3", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "D"],
-            key="calc_category"
+            ["B1", "B2", "B3", "B4", "C1", "C2", "C3", "D1", "D2", "D3"]
         )
-        
-        exp_years = st.number_input("Стаж работы (лет)", min_value=0, max_value=50, value=5, key="calc_exp")
-        
-        st.subheader("Надбавки и доплаты")
-        has_eco = st.checkbox("Экологическая надбавка (Арал/Семипалатинск)", value=False, key="calc_eco_check")
-        eco_rate = st.number_input("Процент экологической надбавки (%)", value=30 if has_eco else 0, step=5, key="calc_eco_rate")
-        
-        other_allowances = st.number_input("Прочие надбавки (₸)", value=0, step=1000, key="calc_other_allow")
+        stazh = st.number_input("Стаж работы (лет)", min_value=0, max_value=50, value=5)
+        bdo = st.number_input("Базовый должностной оклад (БДО), тенге", value=17697.0)
 
-    def get_coefficient(cat, exp):
-        base_coeff = {
-            "A1": 5.0, "A2": 4.5, "A3": 4.0,
-            "B1": 3.8, "B2": 3.4, "B3": 3.1, "B4": 2.8,
-            "C1": 2.5, "C2": 2.3, "C3": 2.1, "D": 1.8
-        }.get(cat, 2.0)
-        exp_bonus = min(exp * 0.05, 1.0)
-        return round(base_coeff + exp_bonus, 2)
+    with col2:
+        rate = st.number_input("Ставка (доля ставки)", min_value=0.1, max_value=2.0, value=1.0, step=0.25)
+        harmful_conditions = st.checkbox("Особые / вредные условия труда (+10-30%)")
+        class_guidance = st.checkbox("Классное руководство / заведование")
 
-    coeff = get_coefficient(category, exp_years)
-    base_salary = bdo * coeff
-    eco_amount = base_salary * (eco_rate / 100.0)
-    total_gross = base_salary + eco_amount + other_allowances
-
-    opv = total_gross * 0.10
-    vosms = total_gross * 0.02
-    mzp = 85000
-    ipn_base = max(0, total_gross - opv - mzp - vosms)
-    ipn = ipn_base * 0.10
-    
-    total_deductions = opv + vosms + ipn
-    net_salary = total_gross - total_deductions
-
-    opvr = total_gross * 0.035
-    social_tax = max(0, (total_gross - opv - vosms) * 0.095)
-    osms = total_gross * 0.03
-    so = (total_gross - opv) * 0.035
-
-    with col_results:
-        st.subheader("Расчетные показатели")
-        st.info(f"**Коэффициент:** {coeff}")
+    if st.button("Рассчитать начисления", type="primary"):
+        # Базовый коэффициент (примерная сетка ПП РК № 1193)
+        coeff_map = {"B1": 4.5, "B2": 4.1, "B3": 3.8, "B4": 3.5, "C1": 3.2, "C2": 3.0, "C3": 2.8, "D1": 2.5, "D2": 2.3, "D3": 2.1}
+        coeff = coeff_map.get(category, 3.0) + (stazh * 0.05)
         
-        st.markdown(f"""
-        | Наименование | Сумма (₸) |
-        | :--- | :--- |
-        | **Должностной оклад (ДО)** | **{base_salary:,.2f}** |
-        | Экологическая надбавка | {eco_amount:,.2f} |
-        | Прочие надбавки | {other_allowances:,.2f} |
-        | **Всего начислено (Gross)** | **{total_gross:,.2f}** |
-        """)
+        base_salary = bdo * coeff * rate
+        extra_pay = base_salary * 0.10 if harmful_conditions else 0.0
+        if class_guidance:
+            extra_pay += base_salary * 0.15
+            
+        total_accrual = base_salary + extra_pay
         
-        st.markdown("### Удержания с работника:")
-        st.markdown(f"""
-        - ОПВ (10%): `{opv:,.2f} ₸`
-        - ВОСМС (2%): `{vosms:,.2f} ₸`
-        - ИПН (10%): `{ipn:,.2f} ₸`
-        - **На руки (Net): `{net_salary:,.2f} ₸`**
-        """)
-        
-        with st.expander("Отчисления работодателя (Информация)"):
-            st.markdown(f"""
-            - **ОПВР (3.5%):** `{opvr:,.2f} ₸`
-            - Социальные отчисления (3.5%): `{so:,.2f} ₸`
-            - ОСМС (3%): `{osms:,.2f} ₸`
-            - Социальный налог: `{social_tax:,.2f} ₸`
-            """)
+        st.success("Расчет успешно выполнен!")
+        res_col1, res_col2, res_col3 = st.columns(3)
+        res_col1.metric("Должностной оклад", f"{base_salary:,.2f} ₸")
+        res_col2.metric("Надбавки и доплаты", f"{extra_pay:,.2f} ₸")
+        res_col3.metric("Итого начислено", f"{total_accrual:,.2f} ₸")
 
-# ==========================================
-# ВКЛАДКА 2: СВЕРКА ВЕДОМОСТЕЙ И 5-15А
-# ==========================================
+# =============================================================================
+# Вкладка 2: Автоматическая сверка ведомости и формы 5-15А
+# =============================================================================
 with tab2:
     st.header("Автоматическая сверка ведомости и формы 5-15А")
     st.write("Загрузите расчетно-платежную ведомость (Excel) и выписку 5-15А (PDF или сканированное изображение) для проверки расхождений.")
 
-    col1, col2 = st.columns(2)
+    col_up1, col_up2 = st.columns(2)
+    
+    with col_up1:
+        st.subheader("1. Расчетно-платежная ведомость")
+        uploaded_excel = st.file_uploader("Загрузите ведомость (.xlsx, .xls)", type=["xlsx", "xls"], key="excel_file")
 
-    with col1:
-        st.markdown("### 1. Расчетно-платежная ведомость")
-        excel_file = st.file_uploader(
-            "Загрузите ведомость (.xlsx, .xls)", type=["xlsx", "xls"], key="excel_uploader"
-        )
+    with col_up2:
+        st.subheader("2. Выписка по форме 5-15А")
+        uploaded_pdf = st.file_uploader("Загрузите выписку 5-15А (.pdf, .png, .jpg, .jpeg)", type=["pdf", "png", "jpg", "jpeg"], key="pdf_file")
 
-    with col2:
-        st.markdown("### 2. Выписка по форме 5-15А")
-        payment_file = st.file_uploader(
-            "Загрузите выписку 5-15А (.pdf, .png, .jpg, .jpeg)",
-            type=["pdf", "png", "jpg", "jpeg"],
-            key="payment_uploader",
-        )
+    if st.button("🚀 Начать сверку данных", use_container_width=True):
+        if not uploaded_excel or not uploaded_pdf:
+            st.error("Пожалуйста, загрузите оба файла (Excel-ведомость и PDF/скан формы 5-15А) перед запуском сверки.")
+        else:
+            with st.spinner("Идет обработка файлов и извлечение данных..."):
+                try:
+                    # 1. Парсинг Excel-ведомости
+                    excel_bytes = uploaded_excel.getvalue()
+                    df_payroll = parse_excel_accruals(excel_bytes)
+                    
+                    # 2. Извлечение текста из PDF / изображения (включая Tesseract OCR)
+                    pdf_bytes = uploaded_pdf.getvalue()
+                    pdf_text = extract_text_from_pdf(pdf_bytes)
 
-    if excel_file and payment_file:
-        if st.button("🚀 Начать сверку данных", type="primary", use_container_width=True, key="start_recon_btn"):
-            with st.spinner("Извлечение данных и выполнение сверки..."):
-                df_accruals = parse_excel_accruals(excel_file)
+                    st.success("Файлы успешно обработаны!")
 
-                file_ext = payment_file.name.split(".")[-1].lower()
-                if file_ext == "pdf":
-                    df_payments = parse_pdf_5_15a(payment_file)
-                else:
-                    df_payments = parse_image_5_15a(payment_file)
-
-                if df_accruals.empty:
-                    st.error("Не удалось извлечь записи из расчетной ведомости Excel.")
-                elif df_payments.empty:
-                    st.error("Не удалось распознать данные из файла 5-15А.")
-                else:
-                    res_df, risks = reconcile_salary(df_accruals, df_payments)
-
-                    st.success("Сверка успешно выполнена!")
-
-                    st.subheader("📋 Сводный отчет сверки")
-                    st.dataframe(res_df, use_container_width=True)
-
-                    if risks:
-                        st.subheader("⚠️ Выявленные расхождения и риски")
-                        for risk in risks:
-                            st.warning(risk)
+                    # Отображение результатов парсинга Excel
+                    st.subheader("📋 Извлеченные данные из Excel")
+                    if not df_payroll.empty:
+                        st.dataframe(df_payroll.head(20), use_container_width=True)
                     else:
-                        st.balloons()
-                        st.success("🎉 Полное совпадение! Расхождений не обнаружено.")
+                        st.warning("Не удалось автоматически распознать строки в Excel. Проверьте структуру файла.")
+
+                    # Отображение результатов OCR из 5-15А
+                    st.subheader("📄 Распознанный текст из формы 5-15А (OCR)")
+                    if pdf_text and len(pdf_text.strip()) > 0:
+                        with st.expander("Показать извлеченный текст выписки 5-15А"):
+                            st.text_area("Текст 5-15А", value=pdf_text, height=300)
+                    else:
+                        st.error("Не удалось извлечь текст из PDF/скана 5-15А.")
+
+                except Exception as e:
+                    st.error(f"Произошла ошибка при обработке файлов: {str(e)}")
