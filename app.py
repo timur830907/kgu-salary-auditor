@@ -32,11 +32,12 @@ st.set_page_config(
 )
 
 st.title("🏛️ Оплата труда гражданских служащих, работников организаций, содержащихся за счет средств государственного бюджета, работников казенных предприятий №1193")
-st.caption("Расчет начислений, удержаний (ОПВ, ИПН, ВОСМС, ОПВР) и финансовая сверка ведомостей с формой 5-15А")
+st.caption("Расчет начислений, удержаний (ОПВ, ИПН, ВОСМС, ОПВР), финансовая сверка ведомостей и годовой свод по форме 5-15А")
 
-tab1, tab2 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "📊 Калькулятор начислений и удержаний (ПП РК № 1193)",
-    "🔍 Сверка ведомостей и формы 5-15А (Аудит рисков)"
+    "🔍 Разовая сверка ведомостей и 5-15А",
+    "📅 Годовой сводный баланс за 12 месяцев"
 ])
 
 # =============================================================================
@@ -191,7 +192,7 @@ with tab1:
         e_c4.write(f"**Социальный налог:** {social_tax:,.2f} ₸")
 
 # =============================================================================
-# Вкладка 2: Надежная сверка ведомостей и формы 5-15А с сохранением состояния
+# Вкладка 2: Разовая сверка ведомостей и формы 5-15А
 # =============================================================================
 with tab2:
     st.header("Автоматическая сверка ведомостей и формы 5-15А")
@@ -216,7 +217,6 @@ with tab2:
             key="pdf_file_uploader"
         )
 
-    # Проверка наличия загруженных файлов
     has_excels = uploaded_excels is not None and len(uploaded_excels) > 0
     has_pdf = uploaded_pdf is not None
 
@@ -230,7 +230,6 @@ with tab2:
                     total_payroll_accrued = 0.0
                     total_payroll_payout = 0.0
 
-                    # 1. Парсинг ведомостей Excel
                     for uploaded_excel in uploaded_excels:
                         excel_bytes = uploaded_excel.getvalue()
                         excel_stream = io.BytesIO(excel_bytes)
@@ -244,21 +243,16 @@ with tab2:
                             if any(k in col_name for k in ["к выплате", "выплате", "на руки", "сумма к выплате", "итого к выплате"]):
                                 total_payroll_payout += pd.to_numeric(df[col], errors='coerce').sum()
 
-                    # Резервный расчет суммы к выплате, если заголовки колонок не совпали с шаблоном
                     if total_payroll_payout == 0.0 and all_dfs:
                         for df in all_dfs:
                             numeric_cols = df.select_dtypes(include=['number']).columns
                             if len(numeric_cols) > 0:
                                 total_payroll_payout += df[numeric_cols[-1]].sum()
 
-                    # 2. Извлечение текста и сумм из PDF 5-15А
                     pdf_bytes = uploaded_pdf.getvalue()
                     pdf_text = extract_text_from_pdf(pdf_bytes)
 
-                    # Безопасная очистка текста перед поиском сумм
                     clean_pdf_text = pdf_text.replace('\n', ' ').replace('\r', ' ')
-                    
-                    # Нахождение всех числовых подстрок
                     matches = re.findall(r'\b\d{1,3}(?:[\s\.]?\d{3})*(?:[,\.]\d{2})?\b', clean_pdf_text)
                     
                     valid_amounts = []
@@ -267,7 +261,6 @@ with tab2:
                             num_str = re.sub(r'[^\d.]', '', m.replace(',', '.'))
                             if num_str:
                                 val = float(num_str)
-                                # Исключение БИН/ИИК/счетов
                                 if 1000.0 <= val <= 500000000.0:
                                     valid_amounts.append(val)
                         except ValueError:
@@ -277,7 +270,6 @@ with tab2:
 
                     st.success(f"Успешно обработано ведомостей: {len(uploaded_excels)}.")
 
-                    # Финансовая сверка
                     st.subheader("⚖️ Результаты финансовой сверки")
                     
                     m1, m2, m3 = st.columns(3)
@@ -287,7 +279,6 @@ with tab2:
                     diff = round(abs(total_payroll_payout - sum_5_15a), 2)
                     m3.metric("Искажение (Разница)", f"{diff:,.2f} ₸", delta=f"-{diff:,.2f} ₸" if diff > 0 else "0.00 ₸", delta_color="inverse")
 
-                    # Аудиторская оценка рисков
                     st.subheader("🚨 Аудиторская оценка рисков")
                     if diff > 1.0 or sum_5_15a == 0.0:
                         st.error("⚠️ **ОБНАРУЖЕН РИСК ИСКАЖЕНИЯ И ОТКЛОНЕНИЯ СУММ!**")
@@ -300,13 +291,11 @@ with tab2:
                     else:
                         st.success("✅ **РИСКОВ НЕ ВЫЯВЛЕНО:** Данные расчетных ведомостей и выписки 5-15А полностью совпадают!")
 
-                    # Таблица данных Excel
                     st.subheader("📋 Данные из загруженных ведомостей")
                     if all_dfs:
                         combined_df = pd.concat(all_dfs, ignore_index=True)
                         st.dataframe(combined_df.head(30), use_container_width=True)
 
-                    # Извлеченный текст 5-15А
                     st.subheader("📄 Извлеченный текст выписки 5-15А (OCR)")
                     if pdf_text and len(pdf_text.strip()) > 0:
                         with st.expander("Показать извлеченный текст 5-15А"):
@@ -314,3 +303,115 @@ with tab2:
 
                 except Exception as e:
                     st.error(f"Произошла ошибка при обработке данных: {str(e)}")
+
+# =============================================================================
+# Вкладка 3: Годовой сводный баланс за 12 месяцев (Помесячная сверка)
+# =============================================================================
+with tab3:
+    st.header("🗓️ Помесячная сверка за 12 месяцев (Оборотно-сальдовая ведомость)")
+    st.write(
+        "Введите начальное сальдо (задолженность к выдаче на 1 января) и укажите данные по месяцам из ведомостей и выписок формы 5-15А. "
+        "Расчет остатка на конец каждого месяца производится автоматически с выведением аудиторских рисков."
+    )
+
+    months = [
+        "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
+    ]
+
+    init_balance = st.number_input(
+        "Остаток на начало года (на 1 января) к выдаче, ₸",
+        value=0.0,
+        step=1000.0,
+        key="yearly_start_balance"
+    )
+
+    st.subheader("📝 Ввод данных по месяцам")
+
+    # Инициализация интерактивной таблицы данных
+    if "monthly_data" not in st.session_state:
+        st.session_state["monthly_data"] = pd.DataFrame({
+            "Месяц": months,
+            "Начислено к выдаче (Ведомость), ₸": [0.0] * 12,
+            "Перечислено по 5-15А, ₸": [0.0] * 12,
+        })
+
+    edited_df = st.data_editor(
+        st.session_state["monthly_data"],
+        num_rows="fixed",
+        use_container_width=True,
+        hide_index=True,
+        key="editor_yearly"
+    )
+
+    if st.button("📊 Рассчитать годовой баланс и проверить риски", type="primary", use_container_width=True):
+        rows = []
+        current_start = init_balance
+        total_accrued = 0.0
+        total_transferred = 0.0
+        has_risks = False
+
+        for idx, row in edited_df.iterrows():
+            month = row["Месяц"]
+            accrued = float(row["Начислено к выдаче (Ведомость), ₸"])
+            transferred = float(row["Перечислено по 5-15А, ₸"])
+
+            end_balance = current_start + accrued - transferred
+            diff = abs(accrued - transferred)
+
+            # Оценка состояния на конец месяца
+            status = "✅ Норма"
+            risk_comment = "Расхождений нет"
+
+            if abs(end_balance) > 1.0:
+                has_risks = True
+                if end_balance > 0:
+                    status = "🚨 РИСК: Задолженность"
+                    risk_comment = f"Недоплата / Остаток к выдаче: {end_balance:,.2f} ₸"
+                else:
+                    status = "🚨 РИСК: Переплата"
+                    risk_comment = f"Превышение выплат по 5-15А на: {abs(end_balance):,.2f} ₸"
+
+            rows.append({
+                "Месяц": month,
+                "Остаток на начало, ₸": round(current_start, 2),
+                "Начислено к выдаче (Ведомость), ₸": round(accrued, 2),
+                "Перечислено (5-15А), ₸": round(transferred, 2),
+                "Остаток на конец, ₸": round(end_balance, 2),
+                "Статус": status,
+                "Комментарий аудитора": risk_comment
+            })
+
+            total_accrued += accrued
+            total_transferred += transferred
+            # Остаток текущего месяца становится началом следующего
+            current_start = end_balance
+
+        result_df = pd.DataFrame(rows)
+
+        st.subheader("📈 Итоговый годовой баланс за 12 месяцев")
+        st.dataframe(result_df, use_container_width=True)
+
+        # Сводные показатели за год
+        y_col1, y_col2, y_col3, y_col4 = st.columns(4)
+        y_col1.metric("Остаток на начало года", f"{init_balance:,.2f} ₸")
+        y_col2.metric("Всего начислено за год", f"{total_accrued:,.2f} ₸")
+        y_col3.metric("Всего перечислено за год", f"{total_transferred:,.2f} ₸")
+        y_col4.metric(
+            "Конечный остаток на конец года",
+            f"{current_start:,.2f} ₸",
+            delta=f"-{abs(current_start):,.2f} ₸" if current_start != 0 else "0.00 ₸",
+            delta_color="inverse"
+        )
+
+        st.subheader("🚨 Сводный комментарий по годовым рискам")
+        if has_risks or current_start != 0.0:
+            st.error("⚠️ **ОБНАРУЖЕНЫ ГОДОВЫЕ ДИСБАЛАНСЫ И АУДИТОРСКИЕ РИСКИ!**")
+            st.warning(
+                f"**Заключение аудитора по годовому отчету:**\n\n"
+                f"1. **Итоговое сальдо на конец 12-го месяца:** {current_start:,.2f} ₸.\n"
+                f"2. **Суммарный оборот:** Начислено по ведомостям — **{total_accrued:,.2f} ₸**, перечислено по 5-15А — **{total_transferred:,.2f} ₸**.\n"
+                f"3. **Рекомендация:** Проверьте месяцы, помеченные статусом `🚨 РИСК`, на предмет задержки финансирования, внеплановых кассовых расходов или неотраженных возвратов средств."
+            )
+        else:
+            st.success("✅ **ГОДОВОЙ БАЛАНС ИДЕАЛЕН:** Все начисления полностью закрыты кассовыми выплатами по форме 5-15А без остатков!")
