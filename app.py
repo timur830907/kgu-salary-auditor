@@ -1,20 +1,22 @@
+import sys
+from pathlib import Path
+
+# Добавляем корневую директорию и папку app в sys.path для корректных импортов на Render
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.append(str(BASE_DIR))
+sys.path.append(str(BASE_DIR / "app"))
+
 import io
 import os
 import re
 import pandas as pd
 import streamlit as st
 
-# Безопасный импорт функций из reconciliation.py
+# Импорт из модуля services
 try:
-    from app.services.reconciliation import (
-        parse_excel_accruals,
-        extract_text_from_pdf,
-    )
-except ImportError:
-    from services.reconciliation import (
-        parse_excel_accruals,
-        extract_text_from_pdf,
-    )
+    from app.services.reconciliation import parse_excel_accruals, extract_text_from_pdf
+except ModuleNotFoundError:
+    from services.reconciliation import parse_excel_accruals, extract_text_from_pdf
 
 # -----------------------------------------------------------------------------
 # Конфигурация страницы Streamlit
