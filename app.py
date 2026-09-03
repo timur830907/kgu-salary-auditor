@@ -4,17 +4,13 @@ import re
 import pandas as pd
 import streamlit as st
 
-# Импорт функций из сервисного модуля сверки
+# Безопасный импорт функций из reconciliation.py
 try:
-from services.reconciliation import (
-    parse_excel_accruals,
-    extract_text_from_pdf,
-    parse_image_5_15a,
-    parse_pdf_5_15a,
-)
+    from app.services.reconciliation import (
+        parse_excel_accruals,
+        extract_text_from_pdf,
     )
 except ImportError:
-    # Запасной вариант импорта, если рабочая директория находится внутри папки app
     from services.reconciliation import (
         parse_excel_accruals,
         extract_text_from_pdf,
@@ -61,7 +57,6 @@ with tab1:
         class_guidance = st.checkbox("Классное руководство / заведование")
 
     if st.button("Рассчитать начисления", type="primary"):
-        # Базовый коэффициент (примерная сетка ПП РК № 1193)
         coeff_map = {"B1": 4.5, "B2": 4.1, "B3": 3.8, "B4": 3.5, "C1": 3.2, "C2": 3.0, "C3": 2.8, "D1": 2.5, "D2": 2.3, "D3": 2.1}
         coeff = coeff_map.get(category, 3.0) + (stazh * 0.05)
         
@@ -101,24 +96,20 @@ with tab2:
         else:
             with st.spinner("Идет обработка файлов и извлечение данных..."):
                 try:
-                    # 1. Парсинг Excel-ведомости
                     excel_bytes = uploaded_excel.getvalue()
                     df_payroll = parse_excel_accruals(excel_bytes)
                     
-                    # 2. Извлечение текста из PDF / изображения (включая Tesseract OCR)
                     pdf_bytes = uploaded_pdf.getvalue()
                     pdf_text = extract_text_from_pdf(pdf_bytes)
 
                     st.success("Файлы успешно обработаны!")
 
-                    # Отображение результатов парсинга Excel
                     st.subheader("📋 Извлеченные данные из Excel")
                     if not df_payroll.empty:
                         st.dataframe(df_payroll.head(20), use_container_width=True)
                     else:
                         st.warning("Не удалось автоматически распознать строки в Excel. Проверьте структуру файла.")
 
-                    # Отображение результатов OCR из 5-15А
                     st.subheader("📄 Распознанный текст из формы 5-15А (OCR)")
                     if pdf_text and len(pdf_text.strip()) > 0:
                         with st.expander("Показать извлеченный текст выписки 5-15А"):
