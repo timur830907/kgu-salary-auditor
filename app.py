@@ -6,9 +6,12 @@ import streamlit as st
 
 # Импорт функций из сервисного модуля сверки
 try:
-    from app.services.reconciliation import (
-        parse_excel_accruals,
-        extract_text_from_pdf,
+from services.reconciliation import (
+    parse_excel_accruals,
+    extract_text_from_pdf,
+    parse_image_5_15a,
+    parse_pdf_5_15a,
+)
     )
 except ImportError:
     # Запасной вариант импорта, если рабочая директория находится внутри папки app

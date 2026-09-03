@@ -22,4 +22,39 @@ def parse_excel_accruals(file_bytes):
         return df
     
     return df_raw
-    return df_raw
+
+# Алиас для обеспечения совместимости
+parse_excel_payroll = parse_excel_accruals
+
+def extract_text_from_pdf(pdf_bytes):
+    """Извлечение текста из PDF с поддержкой OCR через Tesseract."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    full_text = ""
+
+    for page in doc:
+        text = page.get_text()
+        if text and len(text.strip()) > 10:
+            full_text += text + "\n"
+        else:
+            pix = page.get_pixmap(dpi=150)
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            try:
+                ocr_text = pytesseract.image_to_string(img, lang="rus+eng")
+                full_text += ocr_text + "\n"
+            except Exception:
+                ocr_text = pytesseract.image_to_string(img)
+                full_text += ocr_text + "\n"
+
+    return full_text
+
+def parse_image_5_15a(image_bytes):
+    """Распознавание текста со скана/изображения 5-15А."""
+    img = Image.open(io.BytesIO(image_bytes))
+    try:
+        return pytesseract.image_to_string(img, lang="rus+eng")
+    except Exception:
+        return pytesseract.image_to_string(img)
+
+def parse_pdf_5_15a(pdf_bytes):
+    """Парсинг PDF выписки 5-15А."""
+    return extract_text_from_pdf(pdf_bytes)
