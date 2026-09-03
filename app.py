@@ -40,7 +40,7 @@ tab1, tab2 = st.tabs([
 ])
 
 # =============================================================================
-# Вкладка 1: Полный калькулятор (Категории А, Б, С, Д + Расширенные Доплаты)
+# Вкладка 1: Калькулятор (Категории А, Б, С, Д + Расширенные Доплаты)
 # =============================================================================
 with tab1:
     st.header("Расчет оклада, надбавок и удержаний по ПП РК № 1193")
@@ -103,7 +103,6 @@ with tab1:
         mzp_value = st.number_input("Минимальная заработная плата (МЗП), ₸", value=85000.0)
 
     if st.button("Рассчитать полный расчет (Начисления и Удержания)", type="primary", use_container_width=True):
-        # Базовый коэффициент по сетке ПП РК № 1193
         coeff_base = 3.2
         if "Блок A" in category_group:
             coeff_base = 4.5
@@ -123,7 +122,6 @@ with tab1:
         coeff = coeff_base + (stazh * 0.04)
         base_salary = bdo * coeff * rate
 
-        # Доплаты от оклада
         extra_pay = 0.0
         if harmful_conditions:
             extra_pay += base_salary * 0.15
@@ -142,7 +140,6 @@ with tab1:
         if degree_bonus:
             extra_pay += base_salary * 0.35
 
-        # Доплата за категорию
         if "модератор" in qual_category:
             extra_pay += base_salary * 0.30
         elif "эксперт" in qual_category:
@@ -160,7 +157,6 @@ with tab1:
 
         gross_salary = base_salary + extra_pay
 
-        # Удержания
         opv = gross_salary * 0.10               # ОПВ (10%)
         vosms = gross_salary * 0.02             # ВОСМС (2%)
         ipn = max(0.0, (gross_salary - opv - vosms - mzp_value) * 0.10) # ИПН (10%)
@@ -168,11 +164,10 @@ with tab1:
         total_deductions = opv + vosms + ipn
         net_salary = gross_salary - total_deductions
 
-        # Налоги работодателя
         social_deductions = (gross_salary - opv) * 0.035
         social_tax = max(0.0, gross_salary * 0.095 - social_deductions)
         osms_employer = gross_salary * 0.03
-        opvr = gross_salary * 0.035             # ОПВР (3.5% с 2026 года)
+        opvr = gross_salary * 0.035             # ОПВР (3.5% с 2026)
 
         st.success("Расчет успешно выполнен!")
         
@@ -196,11 +191,11 @@ with tab1:
         e_c4.write(f"**Социальный налог:** {social_tax:,.2f} ₸")
 
 # =============================================================================
-# Вкладка 2: Сверка нескольких ведомостей и формы 5-15А с проверкой рисков
+# Вкладка 2: Защищенная сверка нескольких ведомостей и формы 5-15А
 # =============================================================================
 with tab2:
     st.header("Автоматическая сверка ведомостей и формы 5-15А")
-    st.write("Загрузите одна или несколько расчетно-платежных ведомостей (Excel) и выписку 5-15А (PDF) для поиска расхождений и оценки аудиторских рисков.")
+    st.write("Загрузите ведомости (Excel) и выписку 5-15А (PDF) для поиска расхождений и оценки аудиторских рисков.")
 
     col_up1, col_up2 = st.columns(2)
     
@@ -223,7 +218,7 @@ with tab2:
 
     if st.button("🚀 Начать автоматическую сверку и поиск рисков", use_container_width=True):
         if not uploaded_excels or not uploaded_pdf:
-            st.error("Пожалуйста, загрузите ведомости (хотя бы 1 файл Excel) и выписку 5-15А перед запуском сверки.")
+            st.error("Пожалуйста, загрузите ведомости (Excel) и выписку 5-15А перед запуском сверки.")
         else:
             with st.spinner("Анализ ведомостей, распознавание 5-15А и поиск искажений..."):
                 try:
@@ -231,61 +226,79 @@ with tab2:
                     total_payroll_accrued = 0.0
                     total_payroll_payout = 0.0
 
-                    # 1. Обработка всех загруженных ведомостей Excel
+                    # 1. Парсинг Excel-файлов
                     for uploaded_excel in uploaded_excels:
                         excel_stream = io.BytesIO(uploaded_excel.getvalue())
                         df = parse_excel_accruals(excel_stream)
                         all_dfs.append(df)
 
-                        # Суммирование численных значений
                         for col in df.columns:
                             col_name = str(col).lower()
-                            if any(k in col_name for k in ["всего начислено", "начислено", "итого"]):
+                            # Поиск колонок к выплате и начислениям
+                            if any(k in col_name for k in ["всего начислено", "начислено", "итого начислено"]):
                                 total_payroll_accrued += pd.to_numeric(df[col], errors='coerce').sum()
-                            if any(k in col_name for k in ["к выплате", "выплате", "на руки", "выплата"]):
+                            if any(k in col_name for k in ["к выплате", "выплате", "на руки", "сумма к выплате", "итого к выплате"]):
                                 total_payroll_payout += pd.to_numeric(df[col], errors='coerce').sum()
 
-                    # 2. Извлечение текста из PDF 5-15А
+                    # Fallback если не нашлись специфические названия колонок
+                    if total_payroll_payout == 0.0 and all_dfs:
+                        for df in all_dfs:
+                            numeric_cols = df.select_dtypes(include=['number']).columns
+                            if len(numeric_cols) > 0:
+                                total_payroll_payout += df[numeric_cols[-1]].sum()
+
+                    # 2. Парсинг PDF 5-15А с безопасной фильтрацией чисел
                     pdf_bytes = uploaded_pdf.getvalue()
                     pdf_text = extract_text_from_pdf(pdf_bytes)
 
-                    # Поиск итоговых сумм в тексте 5-15А с помощью регулярных выражений
-                    found_numbers = re.findall(r'\b\d{1,3}(?:\s?\d{3})*(?:\.\d{1,2})?\b', pdf_text)
-                    numbers_clean = []
-                    for num in found_numbers:
-                        clean_n = float(num.replace(" ", ""))
-                        if clean_n > 1000:
-                            numbers_clean.append(clean_n)
+                    # Очистка текста от переносов строк перед парсингом регулярками
+                    clean_pdf_text = pdf_text.replace('\n', ' ').replace('\r', ' ')
+                    
+                    # Поиск паттернов сумм с точкой или запятой
+                    matches = re.findall(r'\b\d{1,3}(?:[\s\.]?\d{3})*(?:[,\.]\d{2})?\b', clean_pdf_text)
+                    
+                    valid_amounts = []
+                    for m in matches:
+                        try:
+                            # Удаляем пробелы и спецсимволы
+                            num_str = re.sub(r'[^\d.]', '', m.replace(',', '.'))
+                            if num_str:
+                                val = float(num_str)
+                                # Фильтруем длинные номера БИН/ИИК/счетов (обычно > 100 000 000 000 или целые без копеек)
+                                if 1000.0 <= val <= 500000000.0:
+                                    valid_amounts.append(val)
+                        except ValueError:
+                            continue
 
-                    sum_5_15a = max(numbers_clean) if numbers_clean else 0.0
+                    sum_5_15a = max(valid_amounts) if valid_amounts else 0.0
 
-                    st.success(f"Обработано файлов ведомостей: {len(uploaded_excels)}. Сверка завершена!")
+                    st.success(f"Успешно обработано ведомостей: {len(uploaded_excels)}.")
 
-                    # Отображение сводных показателей
+                    # Сводка и расчет разницы
                     st.subheader("⚖️ Результаты финансовой сверки")
                     
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Сумма по ведомостям (к выплате)", f"{total_payroll_payout:,.2f} ₸")
                     m2.metric("Сумма по форме 5-15А", f"{sum_5_15a:,.2f} ₸")
                     
-                    diff = abs(total_payroll_payout - sum_5_15a)
-                    m3.metric("Расхождение / Искажение", f"{diff:,.2f} ₸", delta=f"{'-' if diff > 0 else ''}{diff:,.2f} ₸", delta_color="inverse")
+                    diff = round(abs(total_payroll_payout - sum_5_15a), 2)
+                    m3.metric("Искажение (Разница)", f"{diff:,.2f} ₸", delta=f"-{diff:,.2f} ₸" if diff > 0 else "0.00 ₸", delta_color="inverse")
 
-                    # Оценка риска
+                    # Оценка аудиторских рисков
                     st.subheader("🚨 Аудиторская оценка рисков")
                     if diff > 1.0 or sum_5_15a == 0.0:
-                        st.error(f"⚠️ **ВНИМАНИЕ: ВЫЯВЛЕН РИСК ИСКАЖЕНИЯ И НЕОБОСНОВАННОГО РАСХОЖДЕНИЯ!**")
+                        st.error("⚠️ **ОБНАРУЖЕН РИСК ИСКАЖЕНИЯ И ОТКЛОНЕНИЯ СУММ!**")
                         st.warning(
-                            f"**Комментарий аудитора:** Итоговая сумма по загруженным ведомостям ({total_payroll_payout:,.2f} ₸) "
-                            f"не совпадает с выпиской формы 5-15А ({sum_5_15a:,.2f} ₸). "
-                            f"Разница составляет **{diff:,.2f} ₸**. "
-                            f"Рекомендуется проверить полноту загруженных ведомостей, корректность применения КБК, а также наличие нераспознанных или удержанных сумм."
+                            f"**Комментарий аудитора:**\n\n"
+                            f"1. **Расхождение:** Выявлено суммарное отклонение между ведомостями и выпиской 5-15А на сумму **{diff:,.2f} ₸**.\n"
+                            f"2. **Оценка риска:** Высокий риск недоплаты/переплаты, а также некорректного проведения платежных поручений по КБК.\n"
+                            f"3. **Рекомендация:** Проверьте реестры выплат по подразделениям и сверьте соответствие итогов в разрезе сотрудников."
                         )
                     else:
-                        st.success("✅ **РИСКОВ НЕ ВЫЯВЛЕНО:** Данные расчетных ведомостей и формы 5-15А полностью сходятся!")
+                        st.success("✅ **РИСКОВ НЕ ВЫЯВЛЕНО:** Данные расчетных ведомостей и выписки 5-15А полностью совпадают!")
 
-                    # Вывод сводной таблицы из Excel
-                    st.subheader("📋 Объединенные данные из ведомостей")
+                    # Сводная таблица из Excel
+                    st.subheader("📋 Данные из загруженных ведомостей")
                     if all_dfs:
                         combined_df = pd.concat(all_dfs, ignore_index=True)
                         st.dataframe(combined_df.head(30), use_container_width=True)
@@ -293,7 +306,7 @@ with tab2:
                     # Вывод распознанного текста 5-15А
                     st.subheader("📄 Извлеченный текст выписки 5-15А (OCR)")
                     if pdf_text and len(pdf_text.strip()) > 0:
-                        with st.expander("Показать полный текст из формы 5-15А"):
+                        with st.expander("Показать извлеченный текст 5-15А"):
                             st.text_area("Текст 5-15А", value=pdf_text, height=300)
 
                 except Exception as e:
