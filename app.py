@@ -47,7 +47,7 @@ with tab1:
     
     with col_params:
         st.subheader("Параметры работника")
-        bdo = st.number_input("Базовый должностной оклад (БДО), ₸", value=17697, step=100, key="calc_bdo")
+        bdo = st.number_input("Базовый должностной оклад (БДО), ₸", value=17697, step=100, key="calc_bdo_input")
         
         cat_group = st.selectbox(
             "Функциональная блок-группа",
