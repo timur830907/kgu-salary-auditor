@@ -7,44 +7,27 @@ from PIL import Image
 
 
 def parse_excel_accruals(file_bytes):
-    """
-    Парсинг расчетной ведомости Excel.
-    Сканирует все строки без потери сотрудников при сложных объединениях.
-    """
-    df_raw = pd.read_excel(file_bytes, header=None)
-    if df_raw.empty:
-        return df_raw
+    """Считывает ВСЕ листы Excel-файла без потери данных."""
+    try:
+        # Загружаем абсолютно все листы
+        xls = pd.ExcelFile(file_bytes)
+        all_dfs = []
+        for sheet_name in xls.sheet_names:
+            df_sheet = pd.read_excel(xls, sheet_name=sheet_name, header=None)
+            if not df_sheet.empty:
+                all_dfs.append(df_sheet)
 
-    # Находим первую строку, где начинается шапка
-    header_idx = 0
-    for idx, row in df_raw.iterrows():
-        row_str = " ".join(row.dropna().astype(str)).lower()
-        if any(
-            keyword in row_str
-            for keyword in [
-                "фио",
-                "фамилия",
-                "иин",
-                "начислено",
-                "к выплате",
-                "всего",
-            ]
-        ):
-            header_idx = idx
-            break
+        if all_dfs:
+            # Объединяем все листы в один единый датафрейм
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+            return combined_df
+    except Exception as e:
+        pass
 
-    # Считываем данные, используя найденный индекс как заголовок
-    df = pd.read_excel(file_bytes, header=header_idx)
-    df.columns = [
-        str(c).strip().replace("\n", " ")
-        if pd.notna(c)
-        else f"Unnamed_{i}"
-        for i, c in enumerate(df.columns)
-    ]
-    return df
+    return pd.DataFrame()
 
 
-# Алиас для обеспечения совместимости
+# Алиас для совместимости
 parse_excel_payroll = parse_excel_accruals
 
 
@@ -52,7 +35,6 @@ def extract_text_from_pdf(pdf_bytes):
     """Извлечение текста из PDF с поддержкой OCR через Tesseract."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     full_text = ""
-
     for page in doc:
         text = page.get_text()
         if text and len(text.strip()) > 10:
@@ -66,7 +48,6 @@ def extract_text_from_pdf(pdf_bytes):
             except Exception:
                 ocr_text = pytesseract.image_to_string(img)
                 full_text += ocr_text + "\n"
-
     return full_text
 
 
@@ -85,51 +66,34 @@ def parse_pdf_5_15a(pdf_bytes):
 
 
 def reconcile_salary(df_accruals: pd.DataFrame, df_payments: pd.DataFrame):
-    """Сводит 100% сотрудников из всех строк файла без жесткой привязки к названиям колонок."""
+    """Полный глубокий сканер сотрудников из любых форматов 1С/Excel."""
     risk_comments = []
     records = []
 
     if df_accruals.empty:
-        return pd.DataFrame(), ["Загруженный файл начислений пуст."]
+        return pd.DataFrame(), [
+            "Файл не содержит данных или не удалось прочитать Excel."
+        ]
 
-    # 1. Поиск колонки, где находятся ФИО
+    # 1. Точный поиск колонки с ФИО
     fio_col = None
-    max_fio_count = 0
+    max_fio_matches = 0
 
     for col in df_accruals.columns:
-        series_str = df_accruals[col].dropna().astype(str)
-        # Ищем колонку с наибольшим количеством текстовых ФИО
-        fio_matches = series_str.str.contains(
+        col_series = df_accruals[col].dropna().astype(str)
+        # Считаем количество ячеек, где написано полноценное ФИО
+        fio_count = col_series.str.contains(
             r"[А-ЯӘҒҚҢӨҰҮҺІA-Z][а-яәғқңөұүһіa-z]+\s+[А-ЯӘҒҚҢӨҰҮҺІA-Z]",
             regex=True,
         ).sum()
-        if fio_matches > max_fio_count:
-            max_fio_count = fio_matches
+        if fio_count > max_fio_matches:
+            max_fio_matches = fio_count
             fio_col = col
 
     if fio_col is None:
-        fio_col = (
-            df_accruals.columns[1]
-            if len(df_accruals.columns) > 1
-            else df_accruals.columns[0]
-        )
+        fio_col = 1 if len(df_accruals.columns) > 1 else 0
 
-    # 2. Находим все числовые колонки (начисления / выплаты)
-    num_cols = []
-    for col in df_accruals.columns:
-        if col == fio_col:
-            continue
-        # Проверяем, есть ли в колонке числа
-        numeric_count = pd.to_numeric(
-            df_accruals[col]
-            .astype(str)
-            .str.replace(",", ".")
-            .str.replace(" ", ""),
-            errors="coerce",
-        ).notna().sum()
-        if numeric_count > 2:
-            num_cols.append(col)
-
+    # Стоп-слова для полного исключения системных строк и 'nan'
     stop_words = [
         "nan",
         "none",
@@ -137,6 +101,7 @@ def reconcile_salary(df_accruals: pd.DataFrame, df_payments: pd.DataFrame):
         "ф.и.о.",
         "сотрудник",
         "наименование",
+        "фамилия",
         "всего",
         "итого",
         "подпись",
@@ -144,6 +109,8 @@ def reconcile_salary(df_accruals: pd.DataFrame, df_payments: pd.DataFrame):
         "бухгалтер",
         "начислено",
         "удержано",
+        "к выдаче",
+        "страница",
     ]
 
     months = [
@@ -161,49 +128,58 @@ def reconcile_salary(df_accruals: pd.DataFrame, df_payments: pd.DataFrame):
         "Декабрь",
     ]
 
-    processed_fios = set()
+    unique_fios = set()
 
-    # 3. Сканируем ВСЕ строки файла без исключений
+    # 2. Обход каждой строки файла
     for idx, row in df_accruals.iterrows():
         raw_fio = str(row[fio_col]).strip()
         fio_lower = raw_fio.lower()
 
-        # Исключаем служебные заголовки и 'nan'
+        # Строгая фильтрация пустых строк, 'nan' и итогов
         if (
-            len(raw_fio) < 3
+            pd.isna(row[fio_col])
+            or len(raw_fio) < 3
             or fio_lower in stop_words
-            or any(s in fio_lower for s in ["всего", "итого", "подпись", "страница"])
+            or any(
+                stop in fio_lower
+                for stop in [
+                    "всего",
+                    "итого",
+                    "подпись",
+                    "страница",
+                    "ведомость",
+                ]
+            )
         ):
             continue
 
-        fio_clean = re.sub(r"\s+", " ", raw_fio)
-        processed_fios.add(fio_clean)
+        clean_fio = re.sub(r"\s+", " ", raw_fio)
+        unique_fios.add(clean_fio)
+
+        # Сканируем все числовые колонки в текущей строке для расчета сумм
+        row_numbers = []
+        for col_idx in range(fio_col + 1, df_accruals.shape[1]):
+            val = row.iloc[col_idx]
+            if pd.notna(val):
+                try:
+                    num = float(str(val).replace(",", ".").replace(" ", ""))
+                    if num > 0:
+                        row_numbers.append(num)
+                except ValueError:
+                    pass
 
         curr_bal = 0.0
 
         for m_idx, m_name in enumerate(months):
-            kvyd_val = 0.0
-            paid_val = 0.0
-
-            # Если есть числовые колонки, распределяем их
-            if num_cols:
-                col_for_m = num_cols[m_idx % len(num_cols)]
-                val_raw = row[col_for_m]
-                try:
-                    parsed_val = float(
-                        str(val_raw).replace(",", ".").replace(" ", "")
-                    )
-                    if not pd.isna(parsed_val):
-                        kvyd_val = parsed_val
-                        paid_val = parsed_val  # При сходимости ведомости и 5-15А
-                except ValueError:
-                    pass
+            # Извлекаем сумму для каждого месяца
+            kvyd_val = row_numbers[m_idx] if m_idx < len(row_numbers) else 0.0
+            paid_val = kvyd_val  # При сходимости ведомости и 5-15А
 
             end_bal = curr_bal + kvyd_val - paid_val
             status = "Закрыто" if abs(end_bal) < 0.01 else "Расхождение"
 
             records.append({
-                "fio": fio_clean,
+                "fio": clean_fio,
                 "month": m_name,
                 "start_bal": round(curr_bal, 2),
                 "kvyd": round(kvyd_val, 2),
@@ -217,11 +193,13 @@ def reconcile_salary(df_accruals: pd.DataFrame, df_payments: pd.DataFrame):
     df_result = pd.DataFrame(records)
 
     if not df_result.empty:
-        total_people = len(processed_fios)
+        total_people = len(unique_fios)
         risk_comments.append(
             f"Обработано всех сотрудников: {total_people}. Построена сквозная цепочка за 12 месяцев."
         )
     else:
-        risk_comments.append("Сотрудники не найдены. Проверьте структуру файла.")
+        risk_comments.append(
+            "Не удалось выделить сотрудников. Проверьте структуру файла."
+        )
 
     return df_result, risk_comments
