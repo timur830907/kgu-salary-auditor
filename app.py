@@ -16,30 +16,78 @@ with st.sidebar:
 
 st.title("📊 Аудитор заработной платы КГУ")
 
-# Зафиксированные 3 вкладки
+# Фиксированные вкладки верхнего уровня
 tab_coeffs, tab_reconciliation, tab_export = st.tabs([
-    "📐 Заработная плата с коэффициентами",
+    "📐 Заработная плата с коэффициентами (ППРК №1193)",
     "📊 Ведомости и 5-15А (Сверка и Риски)",
     "📥 Экспорт отчетов"
 ])
 
-# Вкладка 1: Заработная плата с коэффициентами
+# ==========================================
+# Вкладка 1: Полный калькулятор ППРК №1193
+# ==========================================
 with tab_coeffs:
-    st.subheader("📐 Модуль расчета и проверки окладов с коэффициентами")
-    st.info("Здесь выполняется проверка базовых окладов, стажевых коэффициентов и надбавок сотрудников.")
-    
-    col_c1, col_c2 = st.columns(2)
-    with col_c1:
-        st.number_input("Базовый должностной оклад (БДО), ₸", value=17697.0)
-        st.selectbox("Категория должности", ["G-1", "G-2", "G-3", "G-4", "G-5", "G-6", "G-7", "G-8"])
-    with col_c2:
-        st.number_input("Коэффициент за стаж / категорию", value=1.00, step=0.01)
-        st.number_input("Процент доплат и надбавок, %", value=0.0, step=1.0)
+    st.subheader("📐 Калькулятор окладов, надбавок и доплат (ППРК №1193)")
+    st.caption("Расчет базовых должностных окладов (БДО), стажевых коэффициентов и блоков доплат A, B, C, D.")
 
-# Вкладка 2: Ведомости и 5-15А (Сверка и Риски переплат)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        bdo = st.number_input("Базовый должностной оклад (БДО), ₸", value=17697.0, step=100.0)
+        block = st.selectbox("Блок / Группа управленческого персонала", [
+            "Блок А (Управленческий персонал)",
+            "Блок В (Основной персонал)",
+            "Блок С (Административный персонал)",
+            "Блок D (Вспомогательный персонал)"
+        ])
+    with c2:
+        category = st.selectbox("Категория должности", [
+            "A1-1", "A1-2", "B1-1", "B2-1", "B3-1", "B4-1", "C-1", "C-2", "D-1", "D-2", "G-1", "G-2"
+        ])
+        experience_years = st.number_input("Стаж работы (лет)", min_value=0, max_value=50, value=5)
+    with c3:
+        step = st.selectbox("Ступень стажа", [
+            "До 1 года (Ступень 1)",
+            "От 1 до 3 лет (Ступень 2)",
+            "От 3 до 5 лет (Ступень 3)",
+            "От 5 до 10 лет (Ступень 4)",
+            "От 10 до 15 лет (Ступень 5)",
+            "Свыше 15 лет (Ступень 6)"
+        ])
+        coeff = st.number_input("Расчетный коэффициент (по сетке ППРК №1193)", value=3.42, step=0.01)
+
+    st.markdown("---")
+    st.subheader("🧩 Доплаты и надбавки (Блоки А, Б, С, Д)")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("**Специфические доплаты:**")
+        check_psy = st.checkbox("За особые условия труда (10% от БДО/ДО)")
+        check_hazard = st.checkbox("За вредность / тяжелые условия (30-50% от БДО)")
+        check_rank = st.checkbox("Доплата за классность / квалификацию")
+        other_allowance = st.number_input("Прочие надбавки (в сумме), ₸", value=0.0)
+
+    with col_b:
+        st.markdown("**Расчет Итогового Оклада:**")
+        base_salary = round(bdo * coeff, 2)
+        allowance_total = 0.0
+        if check_psy:
+            allowance_total += base_salary * 0.10
+        if check_hazard:
+            allowance_total += bdo * 0.30
+        allowance_total += other_allowance
+
+        total_calculated = round(base_salary + allowance_total, 2)
+
+        st.metric("Должностной оклад (ДО = БДО × Коэф)", f"{base_salary:,.2f} ₸")
+        st.metric("Сумма доплат и надбавок", f"{allowance_total:,.2f} ₸")
+        st.metric("ИТОГО Начислено (до удержаний)", f"{total_calculated:,.2f} ₸")
+
+# ==========================================
+# Вкладка 2: Ведомости и 5-15А (Сверка и Риски)
+# ==========================================
 with tab_reconciliation:
     st.subheader("📊 Ведомости и 5-15А: Анализ расхождений и рисков переплат")
-    
+
     col1, col2 = st.columns(2)
     with col1:
         accruals_files = st.file_uploader(
@@ -60,7 +108,7 @@ with tab_reconciliation:
         if not accruals_files:
             st.warning("Загрузите файлы Excel ведомостей.")
         else:
-            with st.spinner("Анализ данных и проверка выписок 5-15А..."):
+            with st.spinner("Анализ данных и сканирование 5-15А..."):
                 df_result, risk_comments = reconcile_salary(accruals_files, pdf_files)
                 st.session_state["df_result"] = df_result
                 st.session_state["risk_comments"] = risk_comments
@@ -85,7 +133,7 @@ with tab_reconciliation:
         m_col4.metric("Риски переплат", overpayment_risks)
 
         st.subheader("📋 Детализированная оборотно-сальдовая ведомость")
-        
+
         df_display = df_result.rename(columns={
             "fio": "ФИО сотрудника",
             "month": "Месяц",
@@ -98,7 +146,9 @@ with tab_reconciliation:
 
         st.dataframe(df_display, use_container_width=True, height=500)
 
-# Вкладка 3: Экспорт
+# ==========================================
+# Вкладка 3: Экспорт отчетов
+# ==========================================
 with tab_export:
     st.subheader("📥 Выгрузка отчёта")
     if "df_result" in st.session_state and not st.session_state["df_result"].empty:
@@ -116,4 +166,4 @@ with tab_export:
             use_container_width=True
         )
     else:
-        st.info("Сначала запустите анализ на вкладке сверки, чтобы сформировать отчёт.")
+        st.info("Сначала запустите анализ на второй вкладке.")
