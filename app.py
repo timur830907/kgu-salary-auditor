@@ -4,36 +4,35 @@ import streamlit as st
 from app.services.reconciliation import reconcile_salary
 
 st.set_page_config(
-    page_title="Аудитор заработной платы КГУ",
+    page_title="Аудит оплаты труда гражданских служащих (ППРК №1193)",
     page_icon="📊",
     layout="wide",
 )
 
 with st.sidebar:
     st.title("⚙️ Настройки аудита")
-    st.info("Система авто-анализа начислений и выписок 5-15А государственного учреждения.")
+    st.info("Система авто-анализа начислений, удержаний и выписок 5-15А государственного учреждения.")
     st.caption("КГУ Salary Auditor v2.5 | Render Edition")
 
-st.title("📊 Аудитор заработной платы КГУ")
+st.title("📊 Аудит оплаты труда гражданских служащих, работников организаций, содержащихся за счет средств государственного бюджета, работников казенных предприятий (ППРК №1193)")
 
-# Фиксированные вкладки верхнего уровня
 tab_coeffs, tab_reconciliation, tab_export = st.tabs([
-    "📐 Заработная плата с коэффициентами (ППРК №1193)",
+    "📐 Расчет окладов, удержаний и налогов (ППРК №1193)",
     "📊 Ведомости и 5-15А (Сверка и Риски)",
     "📥 Экспорт отчетов"
 ])
 
 # ==========================================
-# Вкладка 1: Полный калькулятор ППРК №1193
+# Вкладка 1: Полный расчет начислений и налогов
 # ==========================================
 with tab_coeffs:
-    st.subheader("📐 Калькулятор окладов, надбавок и доплат (ППРК №1193)")
-    st.caption("Расчет базовых должностных окладов (БДО), стажевых коэффициентов и блоков доплат A, B, C, D.")
+    st.subheader("📐 Расчет должностных окладов, надбавок, удержаний и налогов")
+    st.caption("Соответствует Постановлению Правительства РК №1193 и Налоговому кодексу РК.")
 
     c1, c2, c3 = st.columns(3)
     with c1:
         bdo = st.number_input("Базовый должностной оклад (БДО), ₸", value=17697.0, step=100.0)
-        block = st.selectbox("Блок / Группа управленческого персонала", [
+        block = st.selectbox("Блок / Группа", [
             "Блок А (Управленческий персонал)",
             "Блок В (Основной персонал)",
             "Блок С (Административный персонал)",
@@ -46,28 +45,21 @@ with tab_coeffs:
         experience_years = st.number_input("Стаж работы (лет)", min_value=0, max_value=50, value=5)
     with c3:
         step = st.selectbox("Ступень стажа", [
-            "До 1 года (Ступень 1)",
-            "От 1 до 3 лет (Ступень 2)",
-            "От 3 до 5 лет (Ступень 3)",
-            "От 5 до 10 лет (Ступень 4)",
-            "От 10 до 15 лет (Ступень 5)",
-            "Свыше 15 лет (Ступень 6)"
+            "До 1 года (Ступень 1)", "От 1 до 3 лет (Ступень 2)",
+            "От 3 до 5 лет (Ступень 3)", "От 5 до 10 лет (Ступень 4)",
+            "От 10 до 15 лет (Ступень 5)", "Свыше 15 лет (Ступень 6)"
         ])
-        coeff = st.number_input("Расчетный коэффициент (по сетке ППРК №1193)", value=3.42, step=0.01)
+        coeff = st.number_input("Расчетный коэффициент (ППРК №1193)", value=3.42, step=0.01)
 
     st.markdown("---")
-    st.subheader("🧩 Доплаты и надбавки (Блоки А, Б, С, Д)")
-
-    col_a, col_b = st.columns(2)
+    
+    col_a, col_b, col_c = st.columns(3)
     with col_a:
-        st.markdown("**Специфические доплаты:**")
-        check_psy = st.checkbox("За особые условия труда (10% от БДО/ДО)")
-        check_hazard = st.checkbox("За вредность / тяжелые условия (30-50% от БДО)")
-        check_rank = st.checkbox("Доплата за классность / квалификацию")
-        other_allowance = st.number_input("Прочие надбавки (в сумме), ₸", value=0.0)
+        st.markdown("**1. Доплаты и надбавки (Блоки A, B, C, D):**")
+        check_psy = st.checkbox("За особые условия труда (10% от ДО)")
+        check_hazard = st.checkbox("За вредность / тяжелые условия (30% от БДО)")
+        other_allowance = st.number_input("Прочие надбавки, ₸", value=0.0)
 
-    with col_b:
-        st.markdown("**Расчет Итогового Оклада:**")
         base_salary = round(bdo * coeff, 2)
         allowance_total = 0.0
         if check_psy:
@@ -76,17 +68,41 @@ with tab_coeffs:
             allowance_total += bdo * 0.30
         allowance_total += other_allowance
 
-        total_calculated = round(base_salary + allowance_total, 2)
+        gross_salary = round(base_salary + allowance_total, 2)
+        st.metric("Всего Начислено (Gross)", f"{gross_salary:,.2f} ₸")
 
-        st.metric("Должностной оклад (ДО = БДО × Коэф)", f"{base_salary:,.2f} ₸")
-        st.metric("Сумма доплат и надбавок", f"{allowance_total:,.2f} ₸")
-        st.metric("ИТОГО Начислено (до удержаний)", f"{total_calculated:,.2f} ₸")
+    with col_b:
+        st.markdown("**2. Удержания с работника:**")
+        opv = round(gross_salary * 0.10, 2)
+        vosms = round(gross_salary * 0.02, 2)
+        ipn_base = gross_salary - opv - vosms - (14 * 4250)  # С учетом 14 МРП вычета
+        ipn = round(max(0.0, ipn_base * 0.10), 2)
+        
+        total_deductions = round(opv + vosms + ipn, 2)
+        net_salary = round(gross_salary - total_deductions, 2)
+
+        st.write(f"• ОПВ (10%): **{opv:,.2f} ₸**")
+        st.write(f"• ВОСМС (2%): **{vosms:,.2f} ₸**")
+        st.write(f"• ИПН (10%): **{ipn:,.2f} ₸**")
+        st.metric("К выдаче на руки (Net)", f"{net_salary:,.2f} ₸")
+
+    with col_c:
+        st.markdown("**3. Налоги и отчисления работодателя:**")
+        opvr = round(gross_salary * 0.035, 2)  # ОПВР 3.5%
+        so = round((gross_salary - opv) * 0.035, 2)  # СО 3.5%
+        osms = round(gross_salary * 0.03, 2)  # ООСМС 3%
+        total_employer_tax = round(opvr + so + osms, 2)
+
+        st.write(f"• ОПВР (3.5%): **{opvr:,.2f} ₸**")
+        st.write(f"• Соц. отчисления (3.5%): **{so:,.2f} ₸**")
+        st.write(f"• ОСМС (3%): **{osms:,.2f} ₸**")
+        st.metric("Нагрузка на работодателя", f"{total_employer_tax:,.2f} ₸")
 
 # ==========================================
 # Вкладка 2: Ведомости и 5-15А (Сверка и Риски)
 # ==========================================
 with tab_reconciliation:
-    st.subheader("📊 Ведомости и 5-15А: Анализ расхождений и рисков переплат")
+    st.subheader("📊 Ведомости и 5-15А: Сквозной пофамильный аудит")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -108,7 +124,7 @@ with tab_reconciliation:
         if not accruals_files:
             st.warning("Загрузите файлы Excel ведомостей.")
         else:
-            with st.spinner("Анализ данных и сканирование 5-15А..."):
+            with st.spinner("Сквозной расчет ОСВ и сканирование 5-15А..."):
                 df_result, risk_comments = reconcile_salary(accruals_files, pdf_files)
                 st.session_state["df_result"] = df_result
                 st.session_state["risk_comments"] = risk_comments
