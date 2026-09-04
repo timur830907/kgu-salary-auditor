@@ -1,375 +1,192 @@
 import io
-import os
 import re
-import sys
-from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-# Настройка путей импорта
-BASE_DIR = Path(__file__).resolve().parent
-sys.path.append(str(BASE_DIR))
-sys.path.append(str(BASE_DIR / "app"))
+# Импорт функции сверки из нашего обновленного сервиса
+from app.services.reconciliation import reconcile_salary
 
-try:
-    from app.services.reconciliation import (
-        parse_excel_accruals,
-        extract_text_from_pdf,
-    )
-except ModuleNotFoundError:
-    from services.reconciliation import (
-        parse_excel_accruals,
-        extract_text_from_pdf,
-    )
-
+# ------------------------------------------------------------------------------
+# Настройка страницы
+# ------------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Аудит ЗП и формы 5-15А (ПП РК № 1193)",
-    page_icon="🏛️",
+    page_title="Аудитор заработной платы КГУ",
+    page_icon="📊",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("🏛️ Оплата труда гражданских служащих, работников организаций, содержащихся за счет средств государственного бюджета, работников казенных предприятий №1193")
-st.caption("Расчет начислений, удержаний (ОПВ, ИПН, ВОСМС, ОПВР), разовая сверка и сквозная пофамильная ОСВ за 12 месяцев")
-
-tab1, tab2, tab3 = st.tabs([
-    "📊 Калькулятор начислений и удержаний (ПП РК № 1193)",
-    "🔍 Разовая сверка ведомостей и 5-15А",
-    "👤 Пофамильная сквозная ОСВ за 12 месяцев"
-])
-
-# =============================================================================
-# Вкладка 1: Калькулятор
-# =============================================================================
-with tab1:
-    st.header("Расчет оклада, надбавок и удержаний по ПП РК № 1193")
+# ------------------------------------------------------------------------------
+# Боковая панель (Sidebar)
+# ------------------------------------------------------------------------------
+with st.sidebar:
+    st.title("⚙️ Настройки аудита")
+    st.info("Система авто-анализа начислений и выписок 5-15А государственного учреждения.")
     
-    col_cat, col_stazh, col_rate = st.columns(3)
-    with col_cat:
-        category_group = st.selectbox(
-            "Группа / Категория должности",
-            [
-                "Блок A (Управленческий персонал: A1, A2, A3)",
-                "Блок B1 (Врачи, Профессорско-преподавательский состав)",
-                "Блок B2 (Учителя, Врачи-специалисты, Методисты)",
-                "Блок B3 (Педагоги, Средний медперсонал, Специалисты)",
-                "Блок B4 (Ассистенты, Воспитатели, Техспециалисты)",
-                "Блок C1 (Административный персонал)",
-                "Блок C2 (Административный персонал)",
-                "Блок C3 (Административный персонал)",
-                "Блок D (Вспомогательный / Рабочий персонал: D1, D2, D3, D4, D5)",
-            ]
-        )
-    with col_stazh:
-        stazh = st.number_input("Стаж работы (лет)", min_value=0, max_value=50, value=5)
-    with col_rate:
-        rate = st.number_input("Ставка (доля ставки)", min_value=0.1, max_value=2.0, value=1.0, step=0.25)
-
-    col_bdo, col_qual = st.columns(2)
-    with col_bdo:
-        bdo = st.number_input("Базовый должностной оклад (БДО), ₸", value=17697.0)
-    with col_qual:
-        qual_category = st.selectbox(
-            "Квалификационная категория / Статус",
-            [
-                "Без категории",
-                "Педагог-модератор (+30% к ДО)",
-                "Педагог-эксперт (+35% к ДО)",
-                "Педагог-исследователь (+40% к ДО)",
-                "Педагог-мастер (+50% к ДО)",
-                "Высшая категория медперсонала (+30% к ДО)",
-                "Первая категория медперсонала (+20% к ДО)",
-                "Вторая категория медперсонала (+10% к ДО)"
-            ]
-        )
-
-    st.subheader("Доплаты, надбавки и особые условия (ПП РК № 1193)")
-    d_col1, d_col2, d_col3 = st.columns(3)
-    
-    with d_col1:
-        harmful_conditions = st.checkbox("Особые / вредные условия труда (+10-30%)")
-        class_guidance = st.checkbox("Классное руководство / заведование (+20-25%)")
-        checking_notebooks = st.checkbox("Проверка письменных работ / тетрадей (+20-25%)")
-        cabinet_management = st.checkbox("Заведование кабинетом / мастерской (+20%)")
-
-    with d_col2:
-        ecological_bonus = st.checkbox("Экологическая зона проживания/выплат")
-        night_work = st.checkbox("Работа в ночное время / праздничные / выходные (1.5x)")
-        combination_pay = st.checkbox("Совмещение должностей / расширение зоны (до 50%)")
-        degree_bonus = st.checkbox("Ученая степень (Кандидат наук / PhD / Доктор)")
-
-    with d_col3:
-        mzp_value = st.number_input("Минимальная заработная плата (МЗП), ₸", value=85000.0)
-
-    if st.button("Рассчитать полный расчет (Начисления и Удержания)", type="primary", use_container_width=True):
-        coeff_base = 3.2
-        if "Блок A" in category_group:
-            coeff_base = 4.5
-        elif "Блок B1" in category_group:
-            coeff_base = 4.1
-        elif "Блок B2" in category_group:
-            coeff_base = 3.8
-        elif "Блок B3" in category_group:
-            coeff_base = 3.4
-        elif "Блок B4" in category_group:
-            coeff_base = 3.0
-        elif "Блок C" in category_group:
-            coeff_base = 2.8
-        elif "Блок D" in category_group:
-            coeff_base = 2.2
-
-        coeff = coeff_base + (stazh * 0.04)
-        base_salary = bdo * coeff * rate
-
-        extra_pay = 0.0
-        if harmful_conditions:
-            extra_pay += base_salary * 0.15
-        if class_guidance:
-            extra_pay += base_salary * 0.25
-        if checking_notebooks:
-            extra_pay += base_salary * 0.20
-        if cabinet_management:
-            extra_pay += base_salary * 0.20
-        if ecological_bonus:
-            extra_pay += base_salary * 0.20
-        if night_work:
-            extra_pay += base_salary * 0.15
-        if combination_pay:
-            extra_pay += base_salary * 0.30
-        if degree_bonus:
-            extra_pay += base_salary * 0.35
-
-        if "модератор" in qual_category:
-            extra_pay += base_salary * 0.30
-        elif "эксперт" in qual_category:
-            extra_pay += base_salary * 0.35
-        elif "исследователь" in qual_category:
-            extra_pay += base_salary * 0.40
-        elif "мастер" in qual_category:
-            extra_pay += base_salary * 0.50
-        elif "Высшая" in qual_category:
-            extra_pay += base_salary * 0.30
-        elif "Первая" in qual_category:
-            extra_pay += base_salary * 0.20
-        elif "Вторая" in qual_category:
-            extra_pay += base_salary * 0.10
-
-        gross_salary = base_salary + extra_pay
-
-        opv = gross_salary * 0.10
-        vosms = gross_salary * 0.02
-        ipn = max(0.0, (gross_salary - opv - vosms - mzp_value) * 0.10)
-        
-        total_deductions = opv + vosms + ipn
-        net_salary = gross_salary - total_deductions
-
-        social_deductions = (gross_salary - opv) * 0.035
-        social_tax = max(0.0, gross_salary * 0.095 - social_deductions)
-        osms_employer = gross_salary * 0.03
-        opvr = gross_salary * 0.035
-
-        st.success("Расчет успешно выполнен!")
-        
-        res1, res2, res3 = st.columns(3)
-        res1.metric("Должностной оклад (ДО)", f"{base_salary:,.2f} ₸")
-        res2.metric("Начислено всего (Gross)", f"{gross_salary:,.2f} ₸")
-        res3.metric("К выплате на руки (Net)", f"{net_salary:,.2f} ₸", delta=f"-{total_deductions:,.2f} ₸ удержания")
-
-# =============================================================================
-# Вкладка 2: Разовая сверка ведомостей и 5-15А
-# =============================================================================
-with tab2:
-    st.header("Автоматическая сверка ведомостей и формы 5-15А")
-    st.write("Загрузите ведомости (Excel) и выписку 5-15А (PDF) для разовой проверки.")
-
-    col_up1, col_up2 = st.columns(2)
-    with col_up1:
-        uploaded_excels = st.file_uploader(
-            "Загрузите ведомости (.xlsx, .xls)", 
-            type=["xlsx", "xls"], 
-            accept_multiple_files=True,
-            key="excel_files_uploader"
-        )
-    with col_up2:
-        uploaded_pdf = st.file_uploader(
-            "Загрузите выписку 5-15А (.pdf, .png, .jpg, .jpeg)", 
-            type=["pdf", "png", "jpg", "jpeg"], 
-            key="pdf_file_uploader"
-        )
-
-    if st.button("🚀 Начать автоматическую сверку", use_container_width=True):
-        if not uploaded_excels or not uploaded_pdf:
-            st.error("Пожалуйста, загрузите ведомости Excel и выписку 5-15А.")
-        else:
-            with st.spinner("Анализ данных..."):
-                try:
-                    all_dfs = []
-                    total_payout = 0.0
-                    for excel in uploaded_excels:
-                        df = parse_excel_accruals(io.BytesIO(excel.getvalue()))
-                        all_dfs.append(df)
-                        for col in df.columns:
-                            if any(k in str(col).lower() for k in ["к выплате", "выплате", "на руки"]):
-                                total_payout += pd.to_numeric(df[col], errors='coerce').sum()
-
-                    pdf_text = extract_text_from_pdf(uploaded_pdf.getvalue())
-                    clean_t = pdf_text.replace('\n', ' ').replace('\r', ' ')
-                    matches = re.findall(r'\b\d{1,3}(?:[\s\.]?\d{3})*(?:[,\.]\d{2})?\b', clean_t)
-                    valid_amounts = [float(re.sub(r'[^\d.]', '', m.replace(',', '.'))) for m in matches if re.sub(r'[^\d.]', '', m.replace(',', '.'))]
-                    valid_amounts = [v for v in valid_amounts if 1000.0 <= v <= 500000000.0]
-                    sum_5_15a = max(valid_amounts) if valid_amounts else 0.0
-
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Сумма по ведомостям (к выплате)", f"{total_payout:,.2f} ₸")
-                    m2.metric("Сумма по 5-15А", f"{sum_5_15a:,.2f} ₸")
-                    diff = abs(total_payout - sum_5_15a)
-                    m3.metric("Разница", f"{diff:,.2f} ₸")
-                except Exception as e:
-                    st.error(f"Ошибка: {str(e)}")
-
-# =============================================================================
-# Вкладка 3: Пофамильная сквозная ОСВ за 12 месяцев
-# =============================================================================
-with tab3:
-    st.header("👤 Пофамильная сквозная оборотно-сальдовая ведомость (12 месяцев)")
-    st.write(
-        "Загрузите ведомости (Excel) и выписки 5-15А (PDF) за разные месяцы. "
-        "Система объединит **всех сотрудников без исключения**, привяжет данные к месяцам и рассчитает последовательный перенос остатков."
+    st.markdown("---")
+    st.markdown("### 📋 Инструкция:")
+    st.markdown(
+        """
+        1. Перейдите во вкладку **Сквозная ОСВ**.
+        2. Загрузите файлы Excel (ведомости) по всем подразделениям/месяцам.
+        3. Загрузите файлы PDF (выписки 5-15А).
+        4. Нажмите **Построить сквозную пофамильную ОСВ**.
+        """
     )
+    st.markdown("---")
+    st.caption("КГУ Salary Auditor v2.4 | Render Edition")
 
-    MONTH_NAMES = [
-        "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
-    ]
+# ------------------------------------------------------------------------------
+# Главный заголовок
+# ------------------------------------------------------------------------------
+st.title("📊 Аудитор заработной платы КГУ")
+st.markdown(
+    """
+    Автоматизированная система сбора, анализа и выявления расхождений между расчетно-платежными 
+    ведомостями (Excel) и казначейскими выписками формы 5-15А (PDF).
+    """
+)
 
-    def get_month_index(filename):
-        fn = filename.lower()
-        if "01" in fn or "янв" in fn: return 0
-        if "02" in fn or "фев" in fn: return 1
-        if "03" in fn or "мар" in fn: return 2
-        if "04" in fn or "апр" in fn: return 3
-        if "05" in fn or "май" in fn or "мая" in fn: return 4
-        if "06" in fn or "июн" in fn: return 5
-        if "07" in fn or "июл" in fn: return 6
-        if "08" in fn or "авг" in fn: return 7
-        if "09" in fn or "сен" in fn: return 8
-        if "10" in fn or "окт" in fn: return 9
-        if "11" in fn or "ноя" in fn: return 10
-        if "12" in fn or "дек" in fn: return 11
-        return 0
+# ------------------------------------------------------------------------------
+# Вкладки приложения
+# ------------------------------------------------------------------------------
+tab_main, tab_export, tab_about = st.tabs(
+    ["🔄 Сквозная ОСВ и Сверка", "📥 Экспорт отчетов", "ℹ️ О системе"]
+)
 
-    col_files1, col_files2 = st.columns(2)
-    with col_files1:
-        yearly_excels = st.file_uploader(
+# ==============================================================================
+# ВКЛАДКА 1: Сквозная ОСВ и Сверка
+# ==============================================================================
+with tab_main:
+    col1, col2 = st.columns(2)
+
+    with col1:
+        accruals_files = st.file_uploader(
             "1. Загрузите ведомости за все месяцы (.xlsx, .xls)",
             type=["xlsx", "xls"],
             accept_multiple_files=True,
-            key="yearly_excels_files_v2"
+            key="accruals_uploader",
         )
-    with col_files2:
-        yearly_pdfs = st.file_uploader(
+
+    with col2:
+        pdf_files = st.file_uploader(
             "2. Загрузите выписки 5-15А за все месяцы (.pdf)",
             type=["pdf"],
             accept_multiple_files=True,
-            key="yearly_pdfs_files_v2"
+            key="pdf_uploader",
         )
 
+    st.divider()
+
     if st.button("📊 Построить сквозную пофамильную ОСВ", type="primary", use_container_width=True):
-        if not yearly_excels:
-            st.error("Загрузите файлы ведомостей!")
+        if not accruals_files:
+            st.warning("Пожалуйста, загрузите хотя бы один файл ведомости Excel.")
         else:
-            with st.spinner("Анализ всех сотрудников и расчет цепочки остатков..."):
+            with st.spinner("Идёт обработка данных, объединение подразделений и сведение сотрудников..."):
                 try:
-                    # Словарь для сумм ведомостей: {ФИО: [м1, м2, ..., м12]}
-                    employee_ved = {}
-                    # Массив кассовых выплат по 5-15А по месяцам [м1, м2, ..., м12]
-                    monthly_515a_totals = [0.0] * 12
+                    # Передаём все загруженные файлы в сервис сверки
+                    df_result, risk_comments = reconcile_salary(
+                        accruals_files, pdf_files
+                    )
 
-                    # 1. Чтение ведомостей (Все сотрудники)
-                    for excel_file in yearly_excels:
-                        m_idx = get_month_index(excel_file.name)
-                        df = parse_excel_accruals(io.BytesIO(excel_file.getvalue()))
-                        
-                        fio_col = None
-                        payout_col = None
-                        for c in df.columns:
-                            c_str = str(c).lower()
-                            if any(k in c_str for k in ["фио", "работник", "сотрудник", "ф.и.о", "наименование"]):
-                                fio_col = c
-                            if any(k in c_str for k in ["к выплате", "выплате", "на руки", "сумма к выплате"]):
-                                payout_col = c
+                    if not df_result.empty:
+                        # Сохраняем результат в session_state для последующего экспорта
+                        st.session_state["df_result"] = df_result
+                        st.session_state["risk_comments"] = risk_comments
 
-                        if fio_col is None and len(df.columns) > 0:
-                            fio_col = df.columns[0]
-                        if payout_col is None:
-                            num_cols = df.select_dtypes(include=['number']).columns
-                            if len(num_cols) > 0:
-                                payout_col = num_cols[-1]
+                        # Считаем точное число уникальных сотрудников
+                        total_people = df_result["fio"].nunique()
 
-                        if fio_col and payout_col:
-                            for _, row in df.iterrows():
-                                name = str(row[fio_col]).strip()
-                                val = pd.to_numeric(row[payout_col], errors='coerce')
-                                # Включаем абсолютно всех людей, отсекаем только явные пустые строки и «Итого»
-                                if pd.notna(val) and len(name) > 1 and "итого" not in name.lower() and "всего" not in name.lower():
-                                    if name not in employee_ved:
-                                        employee_ved[name] = [0.0] * 12
-                                    employee_ved[name][m_idx] += float(val)
+                        st.success(
+                            f"Обработано всех сотрудников: {total_people}. Построена сквозная цепочка за 12 месяцев."
+                        )
 
-                    # 2. Чтение 5-15А
-                    if yearly_pdfs:
-                        for pdf_file in yearly_pdfs:
-                            m_idx = get_month_index(pdf_file.name)
-                            p_text = extract_text_from_pdf(pdf_file.getvalue())
-                            clean_t = p_text.replace('\n', ' ').replace('\r', ' ')
-                            matches = re.findall(r'\b\d{1,3}(?:[\s\.]?\d{3})*(?:[,\.]\d{2})?\b', clean_t)
-                            vals = []
-                            for m in matches:
-                                try:
-                                    v = float(re.sub(r'[^\d.]', '', m.replace(',', '.')))
-                                    if 1000.0 <= v <= 500000000.0:
-                                        vals.append(v)
-                                except ValueError:
-                                    pass
-                            if vals:
-                                monthly_515a_totals[m_idx] += max(vals)
+                        # Метрики верхнего уровня
+                        m_col1, m_col2, m_col3 = st.columns(3)
+                        with m_col1:
+                            st.metric("Всего сотрудников", total_people)
+                        with m_col2:
+                            total_kvyd = df_result["kvyd"].sum()
+                            st.metric("Всего к выдаче", f"{total_kvyd:,.2f} ₸")
+                        with m_col3:
+                            mismatches = df_result[df_result["status"] != "Закрыто"]
+                            st.metric("Выявлено расхождений", len(mismatches))
 
-                    # 3. Расчет помесячной цепочки остатков для каждого сотрудника
-                    all_rows = []
-                    for emp_name, monthly_accruals in employee_ved.items():
-                        current_start = 0.0
-                        for m_idx in range(12):
-                            accrued = monthly_accruals[m_idx]
-                            
-                            # Распределение кассы 5-15А пропорционально начислениям месяца
-                            month_total_ved = sum(emp_vals[m_idx] for emp_vals in employee_ved.values())
-                            if month_total_ved > 0 and monthly_515a_totals[m_idx] > 0:
-                                ratio = min(1.0, monthly_515a_totals[m_idx] / month_total_ved)
-                                transferred = accrued * ratio
-                            else:
-                                transferred = accrued  # если 5-15А за месяц не загружена
+                        st.subheader("📋 Детализированная оборотно-сальдовая ведомость")
 
-                            end_bal = current_start + accrued - transferred
-                            
-                            # Показываем записи только для активных месяцев (где есть движения или остатки)
-                            if accrued > 0 or transferred > 0 or abs(current_start) > 0.01 or abs(end_bal) > 0.01:
-                                all_rows.append({
-                                    "ФИО сотрудника": emp_name,
-                                    "Месяц": MONTH_NAMES[m_idx],
-                                    "Остаток на начало месяца, ₸": round(current_start, 2),
-                                    "К выдаче (Ведомость), ₸": round(accrued, 2),
-                                    "Перечислено (5-15А), ₸": round(transferred, 2),
-                                    "Остаток на конец месяца, ₸": round(end_bal, 2),
-                                    "Статус": "✅ Закрыто" if abs(end_bal) < 0.01 else ("🚨 Долг" if end_bal > 0 else "🚨 Переплата")
-                                })
+                        # Переименовываем столбцы для красивого отображения в Streamlit
+                        display_df = df_result.rename(
+                            columns={
+                                "fio": "ФИО сотрудника",
+                                "month": "Месяц",
+                                "start_bal": "Остаток на начало месяца, ₸",
+                                "kvyd": "К выдаче (Ведомость), ₸",
+                                "paid": "Перечислено (5-15А), ₸",
+                                "end_bal": "Остаток на конец месяца, ₸",
+                                "status": "Статус",
+                            }
+                        )
 
-                            # Перенос остатка в следующий месяц
-                            current_start = end_bal
+                        # Вывод сводной таблицы
+                        st.dataframe(display_df, use_container_width=True, height=500)
 
-                    result_df = pd.DataFrame(all_rows)
-
-                    st.success(f"Обработано всех сотрудников: {len(employee_ved)}. Построена сквозная цепочка за 12 месяцев.")
-                    st.subheader("📋 Детализированная оборотно-сальдовая ведомость")
-                    st.dataframe(result_df, use_container_width=True)
+                        # Вывод дополнительных комментариев/аудит-рисков
+                        if risk_comments:
+                            with st.expander("📌 Примечания аудита и риски", expanded=True):
+                                for comment in risk_comments:
+                                    st.write(f"- {comment}")
+                    else:
+                        st.error(
+                            "Не удалось выделить сотрудников. Проверьте содержимое загруженных Excel-файлов."
+                        )
 
                 except Exception as e:
                     st.error(f"Ошибка обработки: {str(e)}")
+
+# ==============================================================================
+# ВКЛАДКА 2: Экспорт отчетов
+# ==============================================================================
+with tab_export:
+    st.subheader("📥 Выгрузка результатов анализа")
+    
+    if "df_result" in st.session_state and not st.session_state["df_result"].empty:
+        df_to_export = st.session_state["df_result"]
+        
+        # Генерация Excel в памяти
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df_to_export.to_excel(writer, sheet_name="Сводная ОСВ", index=False)
+        output.seek(0)
+
+        st.download_button(
+            label="💾 Скачать сводную ОСВ в Excel (.xlsx)",
+            data=output,
+            file_name="Сводная_ОСВ_Заработная_плата.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+        )
+        
+        st.markdown("---")
+        st.markdown("#### Предпросмотр скачиваемых данных:")
+        st.dataframe(df_to_export.head(10), use_container_width=True)
+    else:
+        st.info("Сначала выполните анализ на первой вкладке, чтобы сформировать отчёт для скачивания.")
+
+# ==============================================================================
+# ВКЛАДКА 3: О системе
+# ==============================================================================
+with tab_about:
+    st.subheader("ℹ️ О программе")
+    st.markdown(
+        """
+        **Аудитор заработной платы КГУ** разработан для автоматической проверки соответствия 
+        бухгалтерского учета первичным казначейским документам.
+
+        **Возможности:**
+        * Парсинг многостраничных Excel-ведомостей любого формата 1С.
+        * Распознавание сканированных и цифровых PDF-выписок по форме 5-15А с применением Tesseract OCR.
+        * Автоматическое сопоставление сотрудников по ФИО вне зависимости от порядка строк.
+        * Расчет непрерывного сальдо с переносом остатков из месяца в месяц.
+        * Формирование итогового отчета за весь календарный год.
+        """
+    )
