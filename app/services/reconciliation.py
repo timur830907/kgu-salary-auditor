@@ -12,54 +12,37 @@ MONTH_NAMES_RU = [
 
 def clean_number(val):
     """
-    Корректно очищает числа из Excel/PDF от неразрывных пробелов (\xa0),
-    обычных пробелов и запятых в разделителях.
+    Корректно преобразует любые значения Excel/PDF в float,
+    учитывая разделители тысяч, неразрывные пробелы и запятые.
     """
-    if pd.isna(val):
+    if pd.isna(val) or val is None:
         return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    
     s = str(val).replace("\xa0", "").replace(" ", "").strip()
     s = s.replace(",", ".")
-    try:
-        return float(s)
-    except ValueError:
-        return 0.0
-
-
-def parse_excel_accruals(file_input):
-    """
-    Парсит загруженные Excel-файлы ведомостей.
-    """
-    all_dfs = []
-    files_list = file_input if isinstance(file_input, (list, tuple)) else [file_input]
-
-    for f in files_list:
+    # Извлекаем первое полноценное число из строки
+    match = re.search(r"-?\d+(?:\.\d+)?", s)
+    if match:
         try:
-            if hasattr(f, "file"):
-                file_bytes = f.file.read()
-                f.file.seek(0)
-            elif hasattr(f, "read"):
-                file_bytes = f.read()
-                if hasattr(f, "seek"):
-                    f.seek(0)
-            else:
-                file_bytes = f
+            return float(match.group(0))
+        except ValueError:
+            return 0.0
+    return 0.0
 
-            xls = pd.ExcelFile(io.BytesIO(file_bytes))
-            for sheet_name in xls.sheet_names:
-                df_sheet = pd.read_excel(xls, sheet_name=sheet_name, header=None)
-                if not df_sheet.empty:
-                    df_sheet["_filename"] = getattr(f, "name", "").lower()
-                    all_dfs.append(df_sheet)
-        except Exception:
-            continue
 
-    return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+def normalize_fio(fio_str):
+    """
+    Приводит ФИО к единому виду для сравнения (например: 'Ешкеева А.Т.' -> 'ЕШКЕЕВААТ')
+    """
+    if not fio_str:
+        return ""
+    clean = re.sub(r"[^А-Яа-яӘғқңөұүһіA-Za-z]", "", str(fio_str))
+    return clean.upper()
 
 
 def extract_text_from_pdf(pdf_file):
-    """
-    Извлекает текст из PDF-файла 5-15А. Использует Tesseract OCR, если текстовый слой отсутствует.
-    """
     try:
         if hasattr(pdf_file, "file"):
             pdf_bytes = pdf_file.file.read()
@@ -89,10 +72,35 @@ def extract_text_from_pdf(pdf_file):
         return ""
 
 
+def parse_excel_accruals(file_input):
+    all_dfs = []
+    files_list = file_input if isinstance(file_input, (list, tuple)) else [file_input]
+
+    for f in files_list:
+        try:
+            if hasattr(f, "file"):
+                file_bytes = f.file.read()
+                f.file.seek(0)
+            elif hasattr(f, "read"):
+                file_bytes = f.read()
+                if hasattr(f, "seek"):
+                    f.seek(0)
+            else:
+                file_bytes = f
+
+            xls = pd.ExcelFile(io.BytesIO(file_bytes))
+            for sheet_name in xls.sheet_names:
+                df_sheet = pd.read_excel(xls, sheet_name=sheet_name, header=None)
+                if not df_sheet.empty:
+                    df_sheet["_filename"] = getattr(f, "name", "").lower()
+                    all_dfs.append(df_sheet)
+        except Exception:
+            continue
+
+    return pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+
+
 def parse_pdf_5_15a_payments(pdf_files):
-    """
-    Парсит PDF 5-15А и извлекает фактически переведенные суммы по сотрудникам и месяцам.
-    """
     if not pdf_files:
         return pd.DataFrame(), []
 
@@ -104,7 +112,6 @@ def parse_pdf_5_15a_payments(pdf_files):
         fname = getattr(f, "name", "выписка").lower()
         text = extract_text_from_pdf(f)
 
-        # Определение месяца по имени файла или тексту
         month_idx = 0
         for idx, m_name in enumerate(MONTH_NAMES_RU):
             if m_name.lower()[:3] in fname:
@@ -117,7 +124,7 @@ def parse_pdf_5_15a_payments(pdf_files):
             if not line_str:
                 continue
 
-            # Извлечение сумм
+            # Поиск всех сумм в строке
             amounts = re.findall(r"\b\d{1,3}(?:[\s,.]?\d{3})*(?:[.,]\d{2})?\b", line_str)
             valid_amounts = []
             for am in amounts:
@@ -126,7 +133,6 @@ def parse_pdf_5_15a_payments(pdf_files):
                     valid_amounts.append(parsed)
 
             if valid_amounts:
-                # Извлечение ФИО (Фамилия И.О. или Полное имя)
                 fio_match = re.search(
                     r"([А-ЯӘҒҚҢӨҰҮҺІA-Z][а-яәғқңөұүһіa-z]+\s+[А-ЯӘҒҚҢӨҰҮҺІA-Z]\.?(?:\s*[А-ЯӘҒҚҢӨҰҮҺІA-Z]\.?)?)",
                     line_str
@@ -136,7 +142,9 @@ def parse_pdf_5_15a_payments(pdf_files):
                 if fio:
                     extracted_records.append({
                         "fio": fio,
-                        "amount": valid_amounts[-1],  # Итоговая сумма по строке
+                        "fio_norm": normalize_fio(fio),
+                        "surname": fio.split()[0].upper(),
+                        "amount": valid_amounts[-1],
                         "month_idx": month_idx,
                         "month_name": MONTH_NAMES_RU[month_idx]
                     })
@@ -145,9 +153,6 @@ def parse_pdf_5_15a_payments(pdf_files):
 
 
 def detect_active_months(accruals_files, pdf_files):
-    """
-    Определяет список уникальных месяцев из загруженных файлов.
-    """
     detected = set()
     all_files = []
     if accruals_files:
@@ -162,15 +167,12 @@ def detect_active_months(accruals_files, pdf_files):
                 detected.add(m_name)
 
     if not detected:
-        return ["Январь", "Февраль", "Март"]
+        return ["Январь", "Февраль", "Март", "Апрель"]
 
     return sorted(list(detected), key=lambda m: MONTH_NAMES_RU.index(m))
 
 
 def reconcile_salary(accruals_files, pdf_files=None):
-    """
-    Сводит данные ведомостей из Excel и скан-выписок 5-15А из PDF.
-    """
     risk_comments = []
     df_accruals = parse_excel_accruals(accruals_files)
     if df_accruals.empty:
@@ -209,6 +211,8 @@ def reconcile_salary(accruals_files, pdf_files=None):
             continue
 
         clean_fio = re.sub(r"\s+", " ", raw_fio)
+        fio_norm = normalize_fio(clean_fio)
+        surname = clean_fio.split()[0].upper()
         unique_fios.add(clean_fio)
 
         row_numbers = []
@@ -219,23 +223,36 @@ def reconcile_salary(accruals_files, pdf_files=None):
                 row_numbers.append(num)
 
         curr_bal = 0.0
-        surname = clean_fio.split()[0].upper()
 
         for m_idx, m_name in enumerate(active_months):
             kvyd_val = row_numbers[m_idx] if m_idx < len(row_numbers) else 0.0
             paid_val = 0.0
 
             if not df_payments.empty:
-                # Четкий поиск выплат по фамилии и месяцу
-                matched_payments = df_payments[
+                # 1. Точное совпадение по нормированному ФИО и месяцу
+                matched = df_payments[
                     (df_payments["month_name"] == m_name) &
-                    (df_payments["fio"].str.upper().str.contains(surname, na=False))
+                    (df_payments["fio_norm"] == fio_norm)
                 ]
-                if not matched_payments.empty:
-                    paid_val = matched_payments["amount"].sum()
+                # 2. Если не найдено — поиск по Фамилии
+                if matched.empty:
+                    matched = df_payments[
+                        (df_payments["month_name"] == m_name) &
+                        (df_payments["surname"] == surname)
+                    ]
+
+                if not matched.empty:
+                    paid_val = matched["amount"].sum()
 
             end_bal = curr_bal + kvyd_val - paid_val
-            status = "Закрыто" if abs(end_bal) < 0.01 else "Расхождение"
+            
+            # Логика статуса и риска переплаты
+            if abs(end_bal) < 0.01:
+                status = "Закрыто"
+            elif end_bal < 0:
+                status = "Переплата (Риск)"
+            else:
+                status = "Недоплата / Расхождение"
 
             records.append({
                 "fio": clean_fio,

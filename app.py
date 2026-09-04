@@ -9,7 +9,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# Боковое меню
 with st.sidebar:
     st.title("⚙️ Настройки аудита")
     st.info("Система авто-анализа начислений и выписок 5-15А государственного учреждения.")
@@ -17,13 +16,30 @@ with st.sidebar:
 
 st.title("📊 Аудитор заработной платы КГУ")
 
-# Фиксированные вкладки верхнего уровня
-tab_main, tab_export, tab_about = st.tabs(
-    ["🔄 Сквозная ОСВ и Сверка", "📥 Экспорт отчетов", "ℹ️ О системе"]
-)
+# Зафиксированные 3 вкладки
+tab_coeffs, tab_reconciliation, tab_export = st.tabs([
+    "📐 Заработная плата с коэффициентами",
+    "📊 Ведомости и 5-15А (Сверка и Риски)",
+    "📥 Экспорт отчетов"
+])
 
-# Вкладка 1: Главный модуль
-with tab_main:
+# Вкладка 1: Заработная плата с коэффициентами
+with tab_coeffs:
+    st.subheader("📐 Модуль расчета и проверки окладов с коэффициентами")
+    st.info("Здесь выполняется проверка базовых окладов, стажевых коэффициентов и надбавок сотрудников.")
+    
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        st.number_input("Базовый должностной оклад (БДО), ₸", value=17697.0)
+        st.selectbox("Категория должности", ["G-1", "G-2", "G-3", "G-4", "G-5", "G-6", "G-7", "G-8"])
+    with col_c2:
+        st.number_input("Коэффициент за стаж / категорию", value=1.00, step=0.01)
+        st.number_input("Процент доплат и надбавок, %", value=0.0, step=1.0)
+
+# Вкладка 2: Ведомости и 5-15А (Сверка и Риски переплат)
+with tab_reconciliation:
+    st.subheader("📊 Ведомости и 5-15А: Анализ расхождений и рисков переплат")
+    
     col1, col2 = st.columns(2)
     with col1:
         accruals_files = st.file_uploader(
@@ -44,12 +60,11 @@ with tab_main:
         if not accruals_files:
             st.warning("Загрузите файлы Excel ведомостей.")
         else:
-            with st.spinner("Анализ данных и сканирование 5-15А..."):
+            with st.spinner("Анализ данных и проверка выписок 5-15А..."):
                 df_result, risk_comments = reconcile_salary(accruals_files, pdf_files)
                 st.session_state["df_result"] = df_result
                 st.session_state["risk_comments"] = risk_comments
 
-    # Отображение результатов при наличии данных
     if "df_result" in st.session_state and not st.session_state["df_result"].empty:
         df_result = st.session_state["df_result"]
         risk_comments = st.session_state.get("risk_comments", [])
@@ -61,15 +76,16 @@ with tab_main:
         total_people = df_result["fio"].nunique()
         total_kvyd = df_result["kvyd"].sum()
         mismatches = len(df_result[df_result["status"] != "Закрыто"])
+        overpayment_risks = len(df_result[df_result["status"] == "Переплата (Риск)"])
 
-        m_col1, m_col2, m_col3 = st.columns(3)
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         m_col1.metric("Всего сотрудников", total_people)
         m_col2.metric("Всего к выдаче", f"{total_kvyd:,.2f} ₸")
         m_col3.metric("Выявлено расхождений", mismatches)
+        m_col4.metric("Риски переплат", overpayment_risks)
 
         st.subheader("📋 Детализированная оборотно-сальдовая ведомость")
         
-        # Переименование колонок для отображения
         df_display = df_result.rename(columns={
             "fio": "ФИО сотрудника",
             "month": "Месяц",
@@ -82,7 +98,7 @@ with tab_main:
 
         st.dataframe(df_display, use_container_width=True, height=500)
 
-# Вкладка 2: Экспорт
+# Вкладка 3: Экспорт
 with tab_export:
     st.subheader("📥 Выгрузка отчёта")
     if "df_result" in st.session_state and not st.session_state["df_result"].empty:
@@ -100,18 +116,4 @@ with tab_export:
             use_container_width=True
         )
     else:
-        st.info("Сначала запустите анализ на первой вкладке, чтобы выгрузить отчёт.")
-
-# Вкладка 3: О системе
-with tab_about:
-    st.subheader("ℹ️ О системе")
-    st.write(
-        """
-        **Аудитор заработной платы КГУ** — инструмент для автоматизации проверки ведомостей и выписок 5-15А.
-        
-        **Основные функции:**
-        - Сквозное сведение оборотно-сальдовой ведомости (ОСВ) по сотрудникам.
-        - Распознавание сканированных PDF-выписок 5-15А с использованием OCR (Tesseract).
-        - Автоматический расчет остатков и подсчет расхождений.
-        """
-    )
+        st.info("Сначала запустите анализ на вкладке сверки, чтобы сформировать отчёт.")
