@@ -9,6 +9,9 @@ st.set_page_config(
     layout="wide",
 )
 
+MRPK_2026 = 3932.0  # МРП на 2026 год
+MZP_2026 = 85000.0  # МЗП на 2026 год
+
 with st.sidebar:
     st.title("⚙️ Настройки аудита")
     st.info("Система авто-анализа начислений, удержаний и выписок 5-15А государственного учреждения.")
@@ -17,29 +20,81 @@ with st.sidebar:
 st.title("📊 Аудит оплаты труда гражданских служащих (ППРК №1193)")
 
 tab_coeffs, tab_reconciliation, tab_export = st.tabs([
-    "📐 Расчет окладов, удержаний и налогов (ППРК №1193)",
+    "📐 Расчет окладов, надбавок, удержаний и налогов (ППРК №1193)",
     "📊 Ведомости и 5-15А (Сверка и Риски)",
     "📥 Экспорт отчетов"
 ])
 
 # ==========================================
-# Вкладка 1: Калькулятор
+# Вкладка 1: Полный калькулятор ППРК №1193
 # ==========================================
 with tab_coeffs:
     st.subheader("📐 Расчет должностных окладов, надбавок, удержаний и налогов")
-    c1, c2, c3 = st.columns(3)
-    with c1:
+    
+    col_left, col_right = st.columns(2)
+    
+    with col_left:
+        st.markdown("### 1. Должностной оклад и специфика сферы")
         bdo = st.number_input("Базовый должностной оклад (БДО), ₸", value=17697.0, step=100.0)
-    with c2:
-        category = st.selectbox("Категория должности", ["A1-1", "B1-1", "C-1", "G-1"])
-    with c3:
-        coeff = st.number_input("Расчетный коэффициент", value=3.42, step=0.01)
+        sphere = st.selectbox("Сфера деятельности", ["Образование / Педагоги", "Здравоохранение / Врачи", "Социальное обеспечение", "Общие служащие / Адм."])
+        category = st.selectbox("Категория должности", ["A1-1", "A1-2", "B1-1", "B2-1", "C-1", "G-1"])
+        coeff = st.number_input("Расчетный коэффициент (по стажу)", value=3.42, step=0.01)
+        
+        do_base = round(bdo * coeff, 2)
+        st.info(f"**Базовый ДО (БДО × Коэфф):** {do_base:,.2f} ₸")
 
-    base_salary = round(bdo * coeff, 2)
-    st.metric("Должностной оклад (ДО)", f"{base_salary:,.2f} ₸")
+        st.markdown("### 2. Доплаты и надбавки")
+        out_check = st.checkbox("Особые условия труда (ОУТ 10% от ДО)", value=True)
+        vredность_check = st.checkbox("Вредность / Психоневрологические КГУ (30% от БДО)", value=False)
+        
+        add_teachers = 0.0
+        if "Образование" in sphere:
+            class_run = st.checkbox("Классное руководство (25% от БДО)", value=False)
+            check_notebooks = st.checkbox("Проверка тетрадей (20% от БДО)", value=False)
+            if class_run: add_teachers += bdo * 0.25
+            if check_notebooks: add_teachers += bdo * 0.20
+
+        out_val = (do_base * 0.10) if out_check else 0.0
+        vred_val = (bdo * 0.30) if vredность_check else 0.0
+        
+        total_accrued = round(do_base + out_val + vred_val + add_teachers, 2)
+        st.success(f"**Всего начислено (Грязными):** {total_accrued:,.2f} ₸")
+
+    with col_right:
+        st.markdown("### 3. Удержания и налоги с работника")
+        is_pensioner = st.checkbox("Пенсионер (Освобождение от ОПВ, ВОСМС)", value=False)
+        is_invalid = st.checkbox("Инвалидность 1, 2 группы (Вычет 882 МРП)", value=False)
+
+        # ОПВ (10%)
+        opv = 0.0 if is_pensioner else round(total_accrued * 0.10, 2)
+        
+        # ВОСМС (2%)
+        vosmc = 0.0 if is_pensioner else round(total_accrued * 0.02, 2)
+        
+        # ИПН (10%)
+        mrp_deduction = (882 * MRPK_2026 / 12) if is_invalid else (14 * MRPK_2026)
+        ipn_base = total_accrued - opv - vosmc - mrp_deduction
+        ipn = round(max(0.0, ipn_base * 0.10), 2)
+        
+        total_deductions = round(opv + vosmc + ipn, 2)
+        to_hand = round(total_accrued - total_deductions, 2)
+
+        st.metric("К выдаче на руки (На руки)", f"{to_hand:,.2f} ₸")
+        st.write(f"* **ОПВ (10%):** {opv:,.2f} ₸")
+        st.write(f"* **ВОСМС (2%):** {vosmc:,.2f} ₸")
+        st.write(f"* **ИПН (10%):** {ipn:,.2f} ₸")
+
+        st.markdown("### 4. Налоги и отчисления работодателя")
+        opvr = 0.0 if is_pensioner else round(total_accrued * 0.035, 2) # ОПВР 3.5%
+        so = round((total_accrued - opv) * 0.035, 2) # Соцотчисления 3.5%
+        osmc = round(total_accrued * 0.03, 2) # ОСМС 3%
+        
+        st.write(f"* **ОПВР (3.5%):** {opvr:,.2f} ₸")
+        st.write(f"* **Социальные отчисления (3.5%):** {so:,.2f} ₸")
+        st.write(f"* **ОСМС работодателя (3%):** {osmc:,.2f} ₸")
 
 # ==========================================
-# Вкладка 2: Сверка
+# Вкладка 2: Сверка (ОСВ + 5-15А)
 # ==========================================
 with tab_reconciliation:
     st.subheader("📊 Ведомости и 5-15А: Сквозной пофамильный аудит")

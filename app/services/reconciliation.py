@@ -10,19 +10,20 @@ ALL_MONTHS_RU = [
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
 ]
 
-MONTH_ALIASES = {
-    "янв": "Январь", "01": "Январь", "январь": "Январь", "января": "Январь",
-    "фев": "Февраль", "02": "Февраль", "февраль": "Февраль", "февраля": "Февраль",
-    "мар": "Март", "03": "Март", "март": "Март", "марта": "Март",
-    "апр": "Апрель", "04": "Апрель", "апрель": "Апрель", "апреля": "Апрель",
-    "май": "Май", "05": "Май", "мая": "Май",
-    "июн": "Июнь", "06": "Июнь", "июнь": "Июнь", "июня": "Июнь",
-    "июл": "Июль", "07": "Июль", "июль": "Июль", "июля": "Июль",
-    "авг": "Август", "08": "Август", "август": "Август", "августа": "Август",
-    "сен": "Сентябрь", "09": "Сентябрь", "сентябрь": "Сентябрь", "сентября": "Сентябрь",
-    "окт": "Октябрь", "10": "Октябрь", "октябрь": "Октябрь", "октября": "Октябрь",
-    "ноя": "Ноябрь", "11": "Ноябрь", "ноябрь": "Ноябрь", "ноября": "Ноябрь",
-    "дек": "Декабрь", "12": "Декабрь", "декабрь": "Декабрь", "декабря": "Декабрь"
+# Расширенное сопоставление префиксов и имен
+MONTH_MAP = {
+    "01": "Январь", "янв": "Январь", "январь": "Январь", "января": "Январь",
+    "02": "Февраль", "фев": "Февраль", "февраль": "Февраль", "февраля": "Февраль",
+    "03": "Март", "мар": "Март", "март": "Март", "марта": "Март",
+    "04": "Апрель", "апр": "Апрель", "апрель": "Апрель", "апреля": "Апрель",
+    "05": "Май", "май": "Май", "мая": "Май",
+    "06": "Июнь", "июн": "Июнь", "июнь": "Июнь", "июня": "Июнь",
+    "07": "Июль", "июл": "Июль", "июль": "Июль", "июля": "Июль",
+    "08": "Август", "авг": "Август", "август": "Август", "августа": "Август",
+    "09": "Сентябрь", "сен": "Сентябрь", "сентябрь": "Сентябрь", "сентября": "Сентябрь",
+    "10": "Октябрь", "окт": "Октябрь", "октябрь": "Октябрь", "октября": "Октябрь",
+    "11": "Ноябрь", "ноя": "Ноябрь", "ноябрь": "Ноябрь", "ноября": "Ноябрь",
+    "12": "Декабрь", "дек": "Декабрь", "декабрь": "Декабрь", "декабря": "Декабрь",
 }
 
 def clean_number(val):
@@ -30,9 +31,7 @@ def clean_number(val):
         return 0.0
     if isinstance(val, (int, float)):
         return float(val)
-    
-    s = str(val).replace("\xa0", "").replace(" ", "").strip()
-    s = s.replace(",", ".")
+    s = str(val).replace("\xa0", "").replace(" ", "").strip().replace(",", ".")
     match = re.search(r"-?\d+(?:\.\d+)?", s)
     if match:
         try:
@@ -41,21 +40,28 @@ def clean_number(val):
             return 0.0
     return 0.0
 
-
 def normalize_fio(fio_str):
     if not fio_str:
         return ""
     clean = re.sub(r"[^А-Яа-яӘғқңөұүһіA-Za-z]", "", str(fio_str))
     return clean.upper()
 
+def detect_month(text, filename):
+    fname = str(filename).lower()
+    # 1. Проверка по префиксу/имени файла (например "01 учителя", "02 адм", "март.pdf")
+    for key, m_name in MONTH_MAP.items():
+        if re.search(r"(?:^|[\s_.-])" + re.escape(key) + r"(?:$|[\s_.-])", fname):
+            return m_name
+        if key in fname and not key.isdigit():
+            return m_name
 
-def detect_month_from_text_or_name(text, fname):
-    combined = (str(fname) + " " + str(text)).lower()
-    for key, month_name in MONTH_ALIASES.items():
-        if re.search(r"\b" + re.escape(key) + r"\b", combined):
-            return month_name
+    # 2. Поиск внутри текста документа
+    text_lower = str(text).lower()
+    for key, m_name in MONTH_MAP.items():
+        if not key.isdigit() and key in text_lower:
+            return m_name
+            
     return "Январь"
-
 
 def extract_text_from_pdf(pdf_file):
     try:
@@ -86,7 +92,6 @@ def extract_text_from_pdf(pdf_file):
     except Exception:
         return ""
 
-
 def parse_pdf_5_15a_payments(pdf_files):
     if not pdf_files:
         return pd.DataFrame()
@@ -95,9 +100,9 @@ def parse_pdf_5_15a_payments(pdf_files):
     extracted_records = []
 
     for f in files_list:
-        fname = getattr(f, "name", "").lower()
+        fname = getattr(f, "name", "")
         text = extract_text_from_pdf(f)
-        m_name = detect_month_from_text_or_name(text[:500], fname)
+        m_name = detect_month(text[:500], fname)
 
         lines = text.split("\n")
         for line in lines:
@@ -113,9 +118,8 @@ def parse_pdf_5_15a_payments(pdf_files):
                     r"([А-ЯӘҒҚҢӨҰҮҺІA-Z][а-яәғқңөұүһіa-z]+\s+[А-ЯӘҒҚҢӨҰҮҺІA-Z]\.?(?:\s*[А-ЯӘҒҚҢӨҰҮҺІA-Z]\.?)?)",
                     line_str
                 )
-                fio = fio_match.group(1).strip() if fio_match else ""
-
-                if fio:
+                if fio_match:
+                    fio = fio_match.group(1).strip()
                     extracted_records.append({
                         "fio": fio,
                         "fio_norm": normalize_fio(fio),
@@ -125,7 +129,6 @@ def parse_pdf_5_15a_payments(pdf_files):
                     })
 
     return pd.DataFrame(extracted_records)
-
 
 def reconcile_salary(accruals_files, pdf_files=None):
     risk_comments = []
@@ -137,7 +140,7 @@ def reconcile_salary(accruals_files, pdf_files=None):
     stop_words = ["nan", "none", "фио", "ф.и.о.", "сотрудник", "наименование", "фамилия", "всего", "итого", "подпись"]
 
     for f in files_list:
-        fname = getattr(f, "name", "").lower()
+        fname = getattr(f, "name", "")
 
         try:
             if hasattr(f, "file"):
@@ -156,9 +159,8 @@ def reconcile_salary(accruals_files, pdf_files=None):
                 if df.empty:
                     continue
 
-                # Определение месяца по содержимому листа
                 sample_text = " ".join(df.iloc[:5].fillna("").astype(str).values.flatten())
-                m_name = detect_month_from_text_or_name(sample_text, fname)
+                m_name = detect_month(sample_text, fname)
                 active_months_set.add(m_name)
 
                 fio_col = None
@@ -192,6 +194,7 @@ def reconcile_salary(accruals_files, pdf_files=None):
                     if clean_fio not in employee_data:
                         employee_data[clean_fio] = {}
 
+                    # Суммируем суммы, если сотрудник встречается в нескольких ведомостях за один месяц
                     employee_data[clean_fio][m_name] = employee_data[clean_fio].get(m_name, 0.0) + kvyd_val
 
         except Exception:
@@ -243,6 +246,6 @@ def reconcile_salary(accruals_files, pdf_files=None):
 
     df_result = pd.DataFrame(records)
     if not df_result.empty:
-        risk_comments.append(f"Обработано сотрудников: {len(employee_data)}. Период: {', '.join(active_months)}.")
+        risk_comments.append(f"Обработано сотрудников: {len(employee_data)}. Успешно распознан период: {', '.join(active_months)}.")
 
     return df_result, risk_comments
