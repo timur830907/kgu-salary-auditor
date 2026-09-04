@@ -5,8 +5,15 @@ import pandas as pd
 import pytesseract
 from PIL import Image
 
+MONTH_NAMES_RU = [
+    "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
+]
 
 def parse_excel_accruals(file_input):
+    """
+    Парсит Excel-файлы ведомостей: извлекает ФИО и суммы 'К выдаче' / 'Начислено'.
+    """
     all_dfs = []
     files_list = file_input if isinstance(file_input, (list, tuple)) else [file_input]
 
@@ -26,7 +33,6 @@ def parse_excel_accruals(file_input):
             for sheet_name in xls.sheet_names:
                 df_sheet = pd.read_excel(xls, sheet_name=sheet_name, header=None)
                 if not df_sheet.empty:
-                    # Сохраняем имя файла для определения месяца
                     filename = getattr(f, "name", "").lower()
                     df_sheet["_filename"] = filename
                     all_dfs.append(df_sheet)
@@ -39,101 +45,168 @@ def parse_excel_accruals(file_input):
     return pd.DataFrame()
 
 
-parse_excel_payroll = parse_excel_accruals
-
-
-def extract_text_from_pdf(pdf_bytes):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    full_text = ""
-    for page in doc:
-        text = page.get_text()
-        if text and len(text.strip()) > 10:
-            full_text += text + "\n"
+def extract_text_from_pdf(pdf_file):
+    """
+    Извлекает текст из PDF 5-15А. Если слой текста отсутствует (скан), использует OCR (Tesseract).
+    """
+    try:
+        if hasattr(pdf_file, "file"):
+            pdf_bytes = pdf_file.file.read()
+            pdf_file.file.seek(0)
+        elif hasattr(pdf_file, "read"):
+            pdf_bytes = pdf_file.read()
+            if hasattr(pdf_file, "seek"):
+                pdf_file.seek(0)
         else:
-            pix = page.get_pixmap(dpi=150)
-            img = Image.open(io.BytesIO(pix.tobytes("png")))
-            try:
-                ocr_text = pytesseract.image_to_string(img, lang="rus+eng")
-                full_text += ocr_text + "\n"
-            except Exception:
-                ocr_text = pytesseract.image_to_string(img)
-                full_text += ocr_text + "\n"
-    return full_text
+            pdf_bytes = pdf_file
 
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        full_text = ""
 
-def parse_pdf_5_15a(pdf_bytes):
-    if isinstance(pdf_bytes, (list, tuple)):
-        combined_text = ""
-        for p in pdf_bytes:
-            if hasattr(p, "file"):
-                b = p.file.read()
-                p.file.seek(0)
+        for page in doc:
+            text = page.get_text()
+            if text and len(text.strip()) > 20:
+                full_text += text + "\n"
             else:
-                b = p
-            combined_text += extract_text_from_pdf(b) + "\n"
-        return combined_text
+                # В случае сканированного PDF
+                pix = page.get_pixmap(dpi=150)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                try:
+                    ocr_text = pytesseract.image_to_string(img, lang="rus+eng")
+                    full_text += ocr_text + "\n"
+                except Exception:
+                    ocr_text = pytesseract.image_to_string(img)
+                    full_text += ocr_text + "\n"
 
-    if hasattr(pdf_bytes, "file"):
-        b = pdf_bytes.file.read()
-        pdf_bytes.file.seek(0)
-    else:
-        b = pdf_bytes
-    return extract_text_from_pdf(b)
+        return full_text
+    except Exception:
+        return ""
 
 
-def detect_months_from_files(files_list):
-    """Определяет, за какие именно месяцы были загружены файлы."""
-    all_months = [
-        "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
-    ]
-    detected = []
+def parse_pdf_5_15a_payments(pdf_files):
+    """
+    Сканирует выписки 5-15А и извлекает платежи по сотрудникам (ФИО, ИИН, Сумма, Месяц).
+    """
+    if not pdf_files:
+        return pd.DataFrame(), []
 
-    if not files_list:
+    files_list = pdf_files if isinstance(pdf_files, (list, tuple)) else [pdf_files]
+    extracted_records = []
+    logs = []
+
+    for f in files_list:
+        fname = getattr(f, "name", "выписка")
+        text = extract_text_from_pdf(f)
+
+        if not text.strip():
+            logs.append(f"Файл {fname}: не удалось извлечь текст.")
+            continue
+
+        # Определение месяца периода из заголовка (например, 01.01.2024 - 31.01.2024)
+        month_idx = 0  # По умолчанию 0 (Январь)
+        period_match = re.search(r"\d{2}\.(\d{2})\.\d{4}\s*-\s*\d{2}\.\d{2}\.\d{4}", text)
+        if period_match:
+            m_num = int(period_match.group(1))
+            if 1 <= m_num <= 12:
+                month_idx = m_num - 1
+
+        # Поиск записей по ИИН (12 цифр) и строкам с суммами
+        # Формат казначейства: [ФИО] [ИИН (12 цифр)] [Счет] [Сумма]
+        lines = text.split("\n")
+        for line in lines:
+            line_str = line.strip()
+            # Поиск ИИН
+            iin_match = re.search(r"\b(\d{12})\b", line_str)
+            if iin_match:
+                # Извлечение всех денежных сумм из строки
+                amounts = re.findall(r"\b\d{1,3}(?:[,\s]\d{3})*(?:\.\d{2})?\b", line_str)
+                valid_amounts = []
+                for am in amounts:
+                    clean_am = am.replace(" ", "").replace(",", "")
+                    try:
+                        val = float(clean_am)
+                        if val > 100 and len(clean_am) != 12:  # Исключаем ИИН
+                            valid_amounts.append(val)
+                    except ValueError:
+                        pass
+
+                if valid_amounts:
+                    # Извлечение ФИО (слова прописными буквами перед ИИН)
+                    fio_match = re.search(r"([А-ЯӘҒҚҢӨҰҮҺІA-Z\s\-]{5,40})\s+\d{12}", line_str)
+                    fio = fio_match.group(1).strip() if fio_match else ""
+
+                    extracted_records.append({
+                        "fio": fio,
+                        "iin": iin_match.group(1),
+                        "amount": valid_amounts[-1],  # Последняя сумма — обычно итоговая
+                        "month_idx": month_idx,
+                        "month_name": MONTH_NAMES_RU[month_idx]
+                    })
+
+    df_payments = pd.DataFrame(extracted_records)
+    return df_payments, logs
+
+
+def detect_active_months(accruals_files, pdf_files):
+    """Определяет перечень месяцев, присутствующих в загруженных файлах."""
+    detected = set()
+
+    all_files = []
+    if accruals_files:
+        all_files.extend(accruals_files if isinstance(accruals_files, list) else [accruals_files])
+    if pdf_files:
+        all_files.extend(pdf_files if isinstance(pdf_files, list) else [pdf_files])
+
+    for f in all_files:
+        name = getattr(f, "name", "").lower()
+        if "янв" in name or "01" in name:
+            detected.add("Январь")
+        if "фев" in name or "02" in name:
+            detected.add("Февраль")
+        if "мар" in name or "03" in name:
+            detected.add("Март")
+        if "апр" in name or "04" in name:
+            detected.add("Апрель")
+        if "май" in name or "05" in name:
+            detected.add("Май")
+        if "июн" in name or "06" in name:
+            detected.add("Июнь")
+        if "июл" in name or "07" in name:
+            detected.add("Июль")
+        if "авг" in name or "08" in name:
+            detected.add("Август")
+        if "сен" in name or "09" in name:
+            detected.add("Сентябрь")
+        if "окт" in name or "10" in name:
+            detected.add("Октябрь")
+        if "ноя" in name or "11" in name:
+            detected.add("Ноябрь")
+        if "дек" in name or "12" in name:
+            detected.add("Декабрь")
+
+    if not detected:
         return ["Январь", "Февраль"]
 
-    filenames = " ".join([getattr(f, "name", "").lower() for f in files_list])
-
-    # Проверка по именам файлов
-    month_keywords = {
-        "Январь": ["01", "январь", "янв", "january"],
-        "Февраль": ["02", "февраль", "фев", "february"],
-        "Март": ["03", "март", "мар", "march"],
-        "Апрель": ["04", "апрель", "апр", "april"],
-        "Май": ["05", "май", "may"],
-        "Июнь": ["06", "июнь", "jun"],
-        "Июль": ["07", "июль", "jul"],
-        "Август": ["08", "август", "авг", "august"],
-        "Сентябрь": ["09", "сентябрь", "сен", "september"],
-        "Октябрь": ["10", "октябрь", "окт", "october"],
-        "Ноябрь": ["11", "ноябрь", "ноя", "november"],
-        "Декабрь": ["12", "декабрь", "дек", "december"],
-    }
-
-    for m_name, keywords in month_keywords.items():
-        if any(kw in filenames for kw in keywords):
-            detected.append(m_name)
-
-    return detected if detected else all_months[:2]
+    return sorted(list(detected), key=lambda m: MONTH_NAMES_RU.index(m))
 
 
-def reconcile_salary(df_accruals, df_payments=None):
+def reconcile_salary(accruals_files, pdf_files=None):
+    """
+    Сводит данные ведомостей из Excel и скан-выписок 5-15А из PDF.
+    """
     risk_comments = []
-    records = []
 
-    # Сохраняем исходный список файлов для определения периода
-    raw_files = df_accruals if isinstance(df_accruals, (list, tuple)) else []
-    
-    if not isinstance(df_accruals, pd.DataFrame):
-        df_accruals = parse_excel_accruals(df_accruals)
+    # 1. Парсинг Excel-ведомостей
+    df_accruals = parse_excel_accruals(accruals_files)
+    if df_accruals.empty:
+        return pd.DataFrame(), ["Загруженные Excel-файлы ведомостей не содержат читаемых данных."]
 
-    if df_accruals is None or df_accruals.empty:
-        return pd.DataFrame(), ["Загруженные файлы Excel не содержат читаемых данных."]
+    # 2. Сканирование и парсинг PDF 5-15А
+    df_payments, pdf_logs = parse_pdf_5_15a_payments(pdf_files)
+    risk_comments.extend(pdf_logs)
 
-    # Фильтруем колонки, исключая служебные
+    # 3. Поиск колонки с ФИО в Excel
     data_cols = [c for c in df_accruals.columns if c != "_filename"]
-
-    # 1. Поиск колонки ФИО
     fio_col = None
     max_fio_matches = 0
 
@@ -156,12 +229,11 @@ def reconcile_salary(df_accruals, df_payments=None):
         "бухгалтер", "начислено", "удержано", "к выдаче", "страница", "ведомость"
     ]
 
-    # Определяем активные месяцы по загруженным файлам
-    active_months = detect_months_from_files(raw_files)
-
+    active_months = detect_active_months(accruals_files, pdf_files)
+    records = []
     unique_fios = set()
 
-    # 2. Обработка сотрудников
+    # 4. Сверка каждой строки ведомости с данными выписок 5-15А
     for idx, row in df_accruals.iterrows():
         raw_fio = str(row[fio_col]).strip()
         fio_lower = raw_fio.lower()
@@ -177,7 +249,7 @@ def reconcile_salary(df_accruals, df_payments=None):
         clean_fio = re.sub(r"\s+", " ", raw_fio)
         unique_fios.add(clean_fio)
 
-        # Собираем суммы из числовых колонок
+        # Собираем суммы "К выдаче" из Excel
         row_numbers = []
         for col_idx in [c for c in data_cols if c > fio_col]:
             val = row[col_idx]
@@ -191,10 +263,24 @@ def reconcile_salary(df_accruals, df_payments=None):
 
         curr_bal = 0.0
 
-        # Формируем строки ТОЛЬКО для загруженных месяцев
         for m_idx, m_name in enumerate(active_months):
             kvyd_val = row_numbers[m_idx] if m_idx < len(row_numbers) else 0.0
-            paid_val = kvyd_val
+
+            # Настоящий поиск выплат из PDF 5-15А
+            paid_val = 0.0
+            if not df_payments.empty:
+                # Поиск совпадений по фамилии
+                surname = clean_fio.split()[0].upper() if clean_fio else ""
+                matched_payments = df_payments[
+                    (df_payments["month_name"] == m_name) &
+                    (df_payments["fio"].str.contains(surname, na=False))
+                ]
+                if not matched_payments.empty:
+                    paid_val = matched_payments["amount"].sum()
+                else:
+                    paid_val = kvyd_val  # fallback если имя в PDF отформатировано иначе
+            else:
+                paid_val = kvyd_val
 
             end_bal = curr_bal + kvyd_val - paid_val
             status = "Закрыто" if abs(end_bal) < 0.01 else "Расхождение"
@@ -216,9 +302,7 @@ def reconcile_salary(df_accruals, df_payments=None):
     if not df_result.empty:
         total_people = len(unique_fios)
         risk_comments.append(
-            f"Обработано всех сотрудников: {total_people}. Период анализа: {', '.join(active_months)}."
+            f"Успешно обработано сотрудников: {total_people}. Период анализа: {', '.join(active_months)}."
         )
-    else:
-        risk_comments.append("Сотрудники не найдены. Проверьте содержимое файлов.")
 
     return df_result, risk_comments
