@@ -10,6 +10,21 @@ ALL_MONTHS_RU = [
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
 ]
 
+MONTH_ALIASES = {
+    "янв": "Январь", "01": "Январь", "январь": "Январь", "января": "Январь",
+    "фев": "Февраль", "02": "Февраль", "февраль": "Февраль", "февраля": "Февраль",
+    "мар": "Март", "03": "Март", "март": "Март", "марта": "Март",
+    "апр": "Апрель", "04": "Апрель", "апрель": "Апрель", "апреля": "Апрель",
+    "май": "Май", "05": "Май", "мая": "Май",
+    "июн": "Июнь", "06": "Июнь", "июнь": "Июнь", "июня": "Июнь",
+    "июл": "Июль", "07": "Июль", "июль": "Июль", "июля": "Июль",
+    "авг": "Август", "08": "Август", "август": "Август", "августа": "Август",
+    "сен": "Сентябрь", "09": "Сентябрь", "сентябрь": "Сентябрь", "сентября": "Сентябрь",
+    "окт": "Октябрь", "10": "Октябрь", "октябрь": "Октябрь", "октября": "Октябрь",
+    "ноя": "Ноябрь", "11": "Ноябрь", "ноябрь": "Ноябрь", "ноября": "Ноябрь",
+    "дек": "Декабрь", "12": "Декабрь", "декабрь": "Декабрь", "декабря": "Декабрь"
+}
+
 def clean_number(val):
     if pd.isna(val) or val is None:
         return 0.0
@@ -32,6 +47,14 @@ def normalize_fio(fio_str):
         return ""
     clean = re.sub(r"[^А-Яа-яӘғқңөұүһіA-Za-z]", "", str(fio_str))
     return clean.upper()
+
+
+def detect_month_from_text_or_name(text, fname):
+    combined = (str(fname) + " " + str(text)).lower()
+    for key, month_name in MONTH_ALIASES.items():
+        if re.search(r"\b" + re.escape(key) + r"\b", combined):
+            return month_name
+    return "Январь"
 
 
 def extract_text_from_pdf(pdf_file):
@@ -74,12 +97,7 @@ def parse_pdf_5_15a_payments(pdf_files):
     for f in files_list:
         fname = getattr(f, "name", "").lower()
         text = extract_text_from_pdf(f)
-
-        month_idx = 0
-        for idx, m_name in enumerate(ALL_MONTHS_RU):
-            if m_name.lower()[:3] in fname or f"{idx+1:02d}" in fname:
-                month_idx = idx
-                break
+        m_name = detect_month_from_text_or_name(text[:500], fname)
 
         lines = text.split("\n")
         for line in lines:
@@ -103,7 +121,7 @@ def parse_pdf_5_15a_payments(pdf_files):
                         "fio_norm": normalize_fio(fio),
                         "surname": fio.split()[0].upper(),
                         "amount": valid_amounts[-1],
-                        "month_name": ALL_MONTHS_RU[month_idx]
+                        "month_name": m_name
                     })
 
     return pd.DataFrame(extracted_records)
@@ -114,21 +132,12 @@ def reconcile_salary(accruals_files, pdf_files=None):
     files_list = accruals_files if isinstance(accruals_files, (list, tuple)) else [accruals_files]
     df_payments = parse_pdf_5_15a_payments(pdf_files)
 
-    # Словарь: { ФИО: { Месяц: Сумма_к_выдаче } }
     employee_data = {}
     active_months_set = set()
-
     stop_words = ["nan", "none", "фио", "ф.и.о.", "сотрудник", "наименование", "фамилия", "всего", "итого", "подпись"]
 
     for f in files_list:
         fname = getattr(f, "name", "").lower()
-        m_name = "Январь"
-        for idx, m in enumerate(ALL_MONTHS_RU):
-            if m.lower()[:3] in fname or f"{idx+1:02d}" in fname:
-                m_name = m
-                break
-
-        active_months_set.add(m_name)
 
         try:
             if hasattr(f, "file"):
@@ -146,6 +155,11 @@ def reconcile_salary(accruals_files, pdf_files=None):
                 df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
                 if df.empty:
                     continue
+
+                # Определение месяца по содержимому листа
+                sample_text = " ".join(df.iloc[:5].fillna("").astype(str).values.flatten())
+                m_name = detect_month_from_text_or_name(sample_text, fname)
+                active_months_set.add(m_name)
 
                 fio_col = None
                 max_fios = 0
@@ -166,8 +180,7 @@ def reconcile_salary(accruals_files, pdf_files=None):
                         continue
 
                     clean_fio = re.sub(r"\s+", " ", raw_fio)
-                    
-                    # Извлечение реальной суммы "К выдаче" (выбираем наибольшую логичную сумму в строке)
+
                     candidates = []
                     for c in range(fio_col + 1, len(row)):
                         val = clean_number(row[c])
@@ -178,7 +191,7 @@ def reconcile_salary(accruals_files, pdf_files=None):
 
                     if clean_fio not in employee_data:
                         employee_data[clean_fio] = {}
-                    
+
                     employee_data[clean_fio][m_name] = employee_data[clean_fio].get(m_name, 0.0) + kvyd_val
 
         except Exception:
@@ -190,7 +203,6 @@ def reconcile_salary(accruals_files, pdf_files=None):
 
     records = []
 
-    # Непрерывный расчет баланса с переходом остатка между месяцами
     for fio, months_dict in employee_data.items():
         fio_norm = normalize_fio(fio)
         surname = fio.split()[0].upper()
@@ -215,9 +227,9 @@ def reconcile_salary(accruals_files, pdf_files=None):
             if abs(end_bal) < 0.01:
                 status = "Закрыто"
             elif end_bal < 0:
-                status = "Переплата (Риск)"
+                status = "Переплата"
             else:
-                status = "Недоплата / Расхождение"
+                status = "Недоплата"
 
             records.append({
                 "fio": fio,
